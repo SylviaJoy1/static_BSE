@@ -228,8 +228,8 @@ class BSE(rhf.TDA):
     }
     def __init__(self, gw, frozen=None, TDA=True, singlet=True,  mo_coeff=None, mo_occ=None):
         assert(isinstance(gw._scf, dft.rks.RKS) or isinstance(gw._scf, dft.rks_symm.SymAdaptedRKS))
-        if mo_coeff  is None: mo_coeff  = mf.mo_coeff
-        if mo_occ    is None: mo_occ    = mf.mo_occ
+        if mo_coeff  is None: mo_coeff  = gw._scf.mo_coeff
+        if mo_occ    is None: mo_occ    = gw._scf.mo_occ
         
         self.gw = gw
         self.mf = gw._scf
