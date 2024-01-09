@@ -237,8 +237,8 @@ class BSE(rhf.TDA):
         self._scf = gw._scf
         self.gw_e = gw.mo_energy
         self.verbose = self.mol.verbose
-        self.stdout = mf.stdout
-        self.max_memory = mf.max_memory
+        self.stdout = gw._scf.stdout
+        self.max_memory = gw._scf.max_memory
 
         self.max_space = getattr(__config__, 'eom_rccsd_EOM_max_space', 20)
         self.max_cycle = getattr(__config__, 'eom_rccsd_EOM_max_cycle', 50)
