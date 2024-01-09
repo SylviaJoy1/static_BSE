@@ -227,7 +227,7 @@ class BSE(rhf.TDA):
         'frozen', 'mol', 'with_df', 'mo_energy', 'mo_coeff', 'mo_occ'
     }
     def __init__(self, gw, frozen=None, TDA=True, singlet=True,  mo_coeff=None, mo_occ=None):
-        assert(isinstance(mf, dft.rks.RKS) or isinstance(mf, dft.rks_symm.SymAdaptedRKS))
+        assert(isinstance(gw._scf, dft.rks.RKS) or isinstance(gw._scf, dft.rks_symm.SymAdaptedRKS))
         if mo_coeff  is None: mo_coeff  = mf.mo_coeff
         if mo_occ    is None: mo_occ    = mf.mo_occ
         
