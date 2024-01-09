@@ -175,7 +175,7 @@ from types import SimpleNamespace
 
 from pyscf.ao2mo import _ao2mo
 def get_Lpq(gw):
-    mo_coeff = mf.mo_coeff
+    mo_coeff = np.array(gw._scf.mo_coeff)
     nocc = mol.nelectron//2
     nmo = mf.mo_energy.size
     nvir = nmo - nocc
