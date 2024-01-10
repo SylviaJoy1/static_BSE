@@ -63,7 +63,7 @@ def kernel(bse, eris, nstates=None, verbose=logger.NOTE):
     nmo = bse.nmo
     nvir = nmo - nocc
     
-    if nstates is None: nstates = 1
+    if nstates is None: nstates = bse.nstates
         
     QP_diff = (bse.mf.mo_energy[:nocc, None]-bse.mf.mo_energy[None, nocc:]).T
     i_mat = 4*einsum('Pia,Qia,ai->PQ', eris.Lov, eris.Lov, 1./QP_diff)
@@ -76,7 +76,7 @@ def kernel(bse, eris, nstates=None, verbose=logger.NOTE):
     if not bse.TDA:
         size *= 2
     
-    guess, nstates = bse.get_init_guess(nstates=nstates)
+    guess = bse.get_init_guess(nstates=nstates)
         
     nroots = nstates
 
@@ -243,10 +243,13 @@ class BSE(rhf.TDA):
         self.max_space = getattr(__config__, 'eom_rccsd_EOM_max_space', 20)
         self.max_cycle = getattr(__config__, 'eom_rccsd_EOM_max_cycle', 50)
         self.conv_tol = getattr(__config__, 'eom_rccsd_EOM_conv_tol', 1e-7)
+        self.nstates = getattr(__config__, 'tdscf_rhf_TDA_nstates', 3)
 
         self.frozen = frozen
         self.TDA = TDA
         self.singlet = singlet
+        
+        self.wfnsym = None
         
         # DF-GW can use GDF integrals
         # EXACT GW cannot use GDF integrals
@@ -264,9 +267,10 @@ class BSE(rhf.TDA):
         self.mo_occ = mo_occ
         self._nocc = None
         self.eris = None
-        self.nstates = None
+        # self.nstates = None
         self._nmo = None
         self._keys = set(self.__dict__.keys())
+        
         
     def dump_flags(self, verbose=None):
         log = logger.new_logger(self, verbose)
@@ -287,12 +291,23 @@ class BSE(rhf.TDA):
         if getattr(self, 'TDA') is False:
             logger.warn(self, 'non-TDA BSE may not always converge (triplet instability problem).')
         logger.info(self, 'singlet = %s', self.singlet)
+        if self.singlet is None:
+            log.info('nstates = %d', self.nstates)
+        elif self.singlet:
+            log.info('nstates = %d singlet', self.nstates)
+        else:
+            log.info('nstates = %d triplet', self.nstates)
         return self
     
     def kernel(self, eris=None, nstates=None):
         nmo = self.nmo
         nocc = self.nocc
         nvir = nmo - nocc
+        
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
         
         if eris is None:
             eris = self.get_Lpq()
@@ -344,10 +359,10 @@ class BSE(rhf.TDA):
             return diag
         else: 
             return np.hstack((diag, -diag))
-        
+    
     def get_init_guess(self, nstates=None, gw_e=None):
        
-        if nstates is None: nstates = 1
+        if nstates is None: nstates = self.nstates
        
         if gw_e is None: gw_e = self.gw_e
         Ediff = gw_e[None,self.nocc:] - gw_e[:self.nocc, None]
@@ -366,8 +381,9 @@ class BSE(rhf.TDA):
         guess = x0
         if not self.TDA:
             guess = np.hstack((guess,0*guess))
-            
-        return guess, nstates
+        
+        guess = BSE.init_guess(self, self.mf)
+        return guess
 
     @property
     def nocc(self):
@@ -415,6 +431,7 @@ if __name__ == '__main__':
      #but the final two singlet exc. converged to something weird (weird symm too),
      #so I had to set TDA=True.
      bse = BSE(mygw, TDA=True, singlet=True)
+     bse.verbose = 9
      conv, excitations, e, xy = bse.kernel(nstates=3)
      print(e*27.2114)
      assert(abs(27.2114*bse.e[0] - 8.09129 < 5*1e-2))
