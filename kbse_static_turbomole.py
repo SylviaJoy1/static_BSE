@@ -21,13 +21,15 @@
 static screening BSE with iterative diagonalization, 
 with or without TDA, singlet or triplet excitations. 
 Density-fitted. Turbomole-style.
+Periodic.
+Requires Nk^2 * Naux * Nmo^2 memory (sim. to hybrid f'nl')
 '''
 
 import time
 # from functools import reduce
 import numpy as np
 from pyscf import lib
-from pyscf.pbc import dft, scf
+from pyscf.pbc import dft
 from pyscf.lib import logger
 from pyscf import __config__
 # import math
@@ -61,6 +63,7 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
     
     nocc = bse.nocc
     nmo = bse.nmo
+    
     nkpts = bse.nkpts
     # kpts = bse.kpts
     nvir = nmo - nocc
@@ -96,6 +99,7 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
                        tol=bse.conv_tol, max_cycle=bse.max_cycle,
                        max_space=bse.max_space, nroots=nroots, verbose=log)
     xy =   [(xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
+    # xy =   [xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5) for xi in xy]
         
     if bse.verbose >= logger.INFO:
         np.set_printoptions(threshold=nocc*nvir)
@@ -115,9 +119,12 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r):
     nvir = nmo - nocc
     
     kptlist = range(bse.nkpts)
-    nklist = len(kptlist)
+    nklist = len(kptlist) 
     
-    gw_e = bse.gw_e #TDA: np.asarray(bse.gw._scf.mo_energy)
+    gw_e = bse.gw_e 
+    #WARNING: Change back! TDA
+    # gw_e = np.asarray(bse.gw._scf.mo_energy)
+    
     gw_e_occ = gw_e[:,:nocc]
     gw_e_vir = gw_e[:,nocc:]
     
@@ -136,6 +143,8 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r):
             kn = kptlist[k]
             # Find km that conserves with kn and kL (-km+kn+kL=G)
             km = all_kidx_r[kL][kn]
+            # WARNING: Change back! TDA
+            # Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
             Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(), qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
     if bse.singlet:
         #kL is (0,0,0) 
@@ -229,8 +238,9 @@ def make_imds(gw):
         Pi = get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx)
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
         qeps_body_inv.append(eps_body_inv)
-            
-    return np.asarray(qkLij), qeps_body_inv, all_kidx_r
+        
+        
+    return np.array(qkLij), qeps_body_inv, all_kidx_r
     
 from pyscf.pbc.tdscf import krhf
 class BSE(krhf.TDA):
@@ -368,10 +378,11 @@ class BSE(krhf.TDA):
         nvir = nmo - nocc
         nkpts = self.nkpts
         
-        gw_e = np.asarray(self.mo_energy)
-        # gw_e = self.gw_e
-        gw_e_occ = gw_e[:,:nocc]
-        gw_e_vir = gw_e[:,nocc:]
+        gw_e = self.gw_e
+        #WARNING: Change back! TDA
+        # gw_e = np.asarray(self.mo_energy)
+        gw_e_occ = gw_e[:, :nocc]
+        gw_e_vir = gw_e[:, nocc:]
         
         # Loo = qkLij[:,:,:,:nocc,:nocc]
         # Lov = qkLij[:,:,:,:nocc,nocc:]
@@ -385,6 +396,8 @@ class BSE(krhf.TDA):
             for a in range(nvir):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
                 diag[:,i,a] -= einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
+                #WARNING: Change back! TDA
+                # diag[kn,i,a] -= einsum('P, P->', Loo[kn,:,i,i].conj(), Lvv[kn,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += 2*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
@@ -425,47 +438,40 @@ class BSE(krhf.TDA):
     get_frozen_mask = get_frozen_mask
 
 if __name__ == '__main__':
-    from pyscf.pbc import gto
+    from pyscf.pbc import gto as pbcgto
+    from pyscf import gto
     from pyscf.pbc.tools import pyscf_ase, lattice
+    import bse
     
-    ##############################
-    # Create a "Cell"
-    ##############################
+    ##########################################################
+    # same as molecular BSE for large cell size with cell.dim = 0. 
+    # Any difference is exactly due to the GW not matching.
     
-    cell = gto.Cell()
     # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
-    formula = 'c'
-    ase_atom = lattice.get_ase_atom(formula)
-    cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
-    cell.a = ase_atom.cell
+    #kpt sampling
+    cell = pbcgto.Cell()
+    cell.atom = '''H 0 0 0;
+                H 1.4 0 0'''
+    cell.a = np.eye(3)*40
     cell.unit = 'B'
-    # cell.atom = [
-    #         ['H', (0,0,0)],
-    #         ['H', (1.4,0,0)]]
-    # cell.a = [[40,0,0],[0,40,0],[0,0,40]]
-    # cell.pseudo = 'gth-pade'
     cell.basis = 'gth-szv'
-    cell.verbose = 7
+    cell.pseudo = 'gth-pade'
+    cell.dimension = 0
     cell.build()
-
-    ##############################
-    #  K-point SCF
-    ##############################
+    
     kdensity = 1
     kmesh = [kdensity, kdensity, kdensity]
     scaled_center=[0.0, 0.0, 0.0]
     kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
     #must have exxdiv=None
     mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
-    mymf.xc = 'hf'
-    mymf.conv_tol = 1e-12
+    mymf.xc = 'lda'
     ekrhf = mymf.kernel()
     
     nocc = cell.nelectron//2
     nmo = np.shape(mymf.mo_energy)[-1]
     nvir = nmo-nocc
     
-    #GW must start with GDF, not FFT (default)
     from pyscf.pbc.gw import krgw_ac
     mygw = krgw_ac.KRGWAC(mymf)
     mygw.linearized = True
@@ -473,17 +479,180 @@ if __name__ == '__main__':
     # without finite size corrections
     mygw.fc = False
     mygw.kernel()
-    print('GW energies (eV)', mygw.mo_energy*27.2114)
+    kgw_e = mygw.mo_energy
+    
+    mybse = BSE(mygw, TDA=True, singlet=True)
+    conv, excitations, ekS, xy = mybse.kernel(nstates=1)
+    
+    mybse.singlet=False
+    conv, excitations, ekT, xy = mybse.kernel(nstates=1)
+    
+    #molecule
+    mol = cell.to_mol()
+    mol.build()
+
+    from pyscf import dft
+    mf = dft.RKS(mol).density_fit()
+    mf.xc = 'lda'
+    mf.kernel()
+
+    nocc = mol.nelectron//2
+    nmo = mf.mo_energy.size
+    nvir = nmo-nocc
+
+    from pyscf import gw
+    mygw = gw.GW(mf, freq_int='ac')
+    mygw.kernel(orbs=range(nmo))
+    gw_e = mygw.mo_energy
+
+    mybse = bse.BSE(mygw, TDA=True)
+    conv, excitations, eS, xy = mybse.kernel(nstates=1)
+   
+    mybse.singlet=False
+    conv, excitations, eT, xy = mybse.kernel(nstates=1)
+    
+    
+    assert(np.all([abs(27.2114*(ekS[i] - eS[i])) < 0.05 for i in range(1)]))
+    assert(np.all([abs(27.2114*(ekT[i] - eT[i])) < 0.05 for i in range(1)]))
+    
+    print('BSE for a large cell with cell.dim = 0 is the same as molecular BSE \
+          for singlets and triplets!')
+
+
+    ##########################################################
+    # kBSE are same for 2x2x2 supercell and 2x2x2 kpt sampling
+    # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
+    from pyscf.pbc import dft
+    #kpt sampling
+    formula = 'c'
+    ase_atom = lattice.get_ase_atom(formula)
+    cell = pbcgto.Cell()
+    cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
+    cell.a = ase_atom.cell
+    cell.unit = 'B'
+    cell.basis = 'gth-szv'
+    cell.pseudo = 'gth-pade'
+    cell.build()
+    
+    kmesh = [2,1,1]
+    scaled_center=[0.0, 0.0, 0.0]
+    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
+    #must have exxdiv=None
+    mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
+    # from pyscf.pbc import df
+    # gdf = df.GDF(cell, kpts)
+    # mymf.with_df = gdf
+    mymf.xc = 'lda'
+    ekrhf = mymf.kernel()
+    
+    nocc = cell.nelectron//2
+    nmo = np.shape(mymf.mo_energy)[-1]
+    nvir = nmo-nocc
+    
+    mygw = krgw_ac.KRGWAC(mymf)
+    mygw.linearized = True
+    mygw.ac = 'pade'
+    # without finite size corrections
+    mygw.fc = False
+    mygw.kernel()
     
     bse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, e, xy = bse.kernel(nstates=7)
+    conv, excitations, ekS, xy = bse.kernel(nstates=3)
 
     bse.singlet=False
-    conv, excitations, e, xy = bse.kernel(nstates=7)
+    conv, excitations, ekT, xy = bse.kernel(nstates=3)
+    
+    #supercell
+    from pyscf.pbc.tools.pbc import super_cell 
+    cell = super_cell(cell, [2,1,1])
+    cell.build()
+    
+    kdensity = 1
+    kmesh = [kdensity, kdensity, kdensity]
+    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
+    #must have exxdiv=None
+    mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
+    mymf.xc = 'lda'
+    ekrhf = mymf.kernel()
+    
+    nocc = cell.nelectron//2
+    nmo = np.shape(mymf.mo_energy)[-1]
+    nvir = nmo-nocc
+    
+    mygw = krgw_ac.KRGWAC(mymf)
+    mygw.linearized = True
+    mygw.ac = 'pade'
+    # without finite size corrections
+    mygw.fc = False
+    mygw.kernel()
+    
+    bse = BSE(mygw, TDA=True, singlet=True)
+    conv, excitations, eS, xy = bse.kernel(nstates=3)
 
-    # mypbctd = mymf.TDA()
-    # mypbctd.run(nstates=7)
-    # mypbctd.run(nstates=7, singlet=False)
+    bse.singlet=False
+    conv, excitations, eT, xy = bse.kernel(nstates=3)
+    
+    assert(np.all([27.2114*(ekS[i] - eS[i]) < 0.01 for i in range(3)]))
+    assert(np.all([27.2114*(ekT[i] - eT[i]) < 0.01 for i in range(3)]))
+    
+    print('BSE supercell at Gamma pt matches BSE unit cell with kpt sampling \
+          \n for singlets and triplets!')
+    
+    ##########################################################
+    # same as kTDA when replace GW energies with MF ones and turn off screening (not just at Gamma pt)
+    # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
+    #WARNING: Have to modify pbc code to pass this test
+    
+    import sys
+    sys.exit()
+    
+    from pyscf.pbc.gw import krgw_ac
+    #kpt sampling
+    formula = 'c'
+    ase_atom = lattice.get_ase_atom(formula)
+    cell = pbcgto.Cell()
+    cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
+    cell.a = ase_atom.cell
+    cell.unit = 'B'
+    cell.basis = 'gth-szv'
+    cell.pseudo = 'gth-hf'
+    cell.build()
+    
+    kmesh = [2,1,1]
+    scaled_center=[0.0, 0.0, 0.0]
+    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
+    #must have exxdiv=None
+    mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
+    mymf.xc = 'hf' #must be hf to compare to TDA!
+    ekrhf = mymf.kernel()
+    
+    nocc = cell.nelectron//2
+    nmo = np.shape(mymf.mo_energy)[-1]
+    nvir = nmo-nocc
+    
+    mygw = krgw_ac.KRGWAC(mymf)
+    mygw.linearized = True
+    mygw.ac = 'pade'
+    # without finite size corrections
+    mygw.fc = False
+    mygw.kernel()
+    
+    #WARNING: Must change gw_e to mf.mo_energy and remove screening!
+    mybse = BSE(mygw, TDA=True, singlet=True)
+    conv, excitations, ekS, xy = mybse.kernel(nstates=3)
+
+    mybse.singlet=False
+    conv, excitations, ekT, xy = mybse.kernel(nstates=3)
+    
+    mypbctd = mymf.TDA()
+    TDAeS = mypbctd.run(nstates=3).e
+    TDAeT = mypbctd.run(nstates=3, singlet=False).e
+    
+    assert(np.all([27.2114*(ekS[i] - TDAeS[0][i]) < 0.001 for i in range(3)]))
+    assert(np.all([27.2114*(ekT[i] - TDAeT[0][i]) < 0.001 for i in range(3)]))
+    
+    print('TDA matches HF-based BSE without screening and with gw_e = mf.mo_energy \
+          \n for singlets and triplets with kpt sampling!')
     
     #TODO:
     #     k-point TDSCF solutions can have non-zero momentum transfer between particle and hole.
