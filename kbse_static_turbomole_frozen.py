@@ -38,7 +38,7 @@ from pyscf import __config__
 
 einsum = lib.einsum
 
-from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
+# from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
     
 REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 # Low excitation filter to avoid numerical instability
@@ -53,7 +53,7 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
     '''
     #mf must be DFT; for HF use xc = 'hf'
 #    assert(isinstance(bse.mf, dft.rks.RKS) or isinstance(bse.mf, dft.rks_symm.SymAdaptedRKS))
-    assert(bse.frozen == 0 or bse.frozen is None)
+    # assert(bse.frozen == 0 or bse.frozen is None)
     
     # cput0 = (time.time(), time.perf_counter())
     log = logger.Logger(bse.stdout, bse.verbose)
@@ -63,8 +63,15 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
     
     # nocc = bse.nocc
     # nmo = bse.nmo
-    nocc = sum([x < bse.nocc for x in bse.orbs])
-    nmo = len(bse.orbs)#bse.nmo
+    
+    nocc = min(sum([x < bse.mf_nocc for x in bse.orbs]), bse.gw_nocc)
+    nmo = min(bse.gw_nmo, len(bse.orbs))#bse.nmo
+    
+    #TODO: Instead, check that bse.orbs is a subset of non-frozen gw orbs.
+    if len(bse.orbs) > bse.gw_nmo:
+        logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
+        raise RuntimeError
+
     
     nkpts = bse.nkpts
     # kpts = bse.kpts
@@ -115,8 +122,10 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
 def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r):
     '''matrix-vector multiplication'''
    
-    nocc = sum([x < bse.nocc for x in bse.orbs])
-    nmo = len(bse.orbs)#bse.nmo
+    # nocc = sum([x < bse.nocc for x in bse.orbs])
+    # nmo = len(bse.orbs)#bse.nmo
+    nocc = min(sum([x < bse.mf_nocc for x in bse.orbs]), bse.gw_nocc)
+    nmo = min(bse.gw_nmo, len(bse.orbs))#bse.nmo
     nkpts = bse.nkpts
     nvir = nmo - nocc
     
@@ -127,8 +136,8 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r):
     #WARNING: Change back! TDA
     # gw_e = np.asarray(bse.gw._scf.mo_energy)
     
-    gw_e_occ = gw_e[:,:nocc]
-    gw_e_vir = gw_e[:,nocc:]
+    gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
+    gw_e_vir = gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
     
     # qkLij, qeps_body_inv, all_kidx_r = make_imds(bse.gw)
     Loo = qkLij[:,:,:,:nocc, :nocc]
@@ -188,8 +197,8 @@ from pyscf.ao2mo.incore import _conc_mos
 def make_imds(gw, orbs):
     mo_energy = np.array(gw._scf.mo_energy)[:,np.ix_(orbs)[0]] #mf mo_energy
     mo_coeff = np.array(gw._scf.mo_coeff)[:,:,np.ix_(orbs)[0]]
-    nmo = len(orbs)
-    nao = gw.nmo
+    nmo = min(gw.nmo, len(orbs))#bse.nmo
+    nao = np.shape(gw._scf.mo_coeff)[-1]
     nkpts = gw.nkpts
     kpts = gw.kpts
     mydf = gw.with_df
@@ -240,8 +249,6 @@ def make_imds(gw, orbs):
         Pi = get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx)
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
         qeps_body_inv.append(eps_body_inv)
-        
-        
     return np.array(qkLij), qeps_body_inv, all_kidx_r
     
 from pyscf.pbc.tdscf import krhf
@@ -274,23 +281,20 @@ class BSE(krhf.TDA):
         self.gw = gw
         if orbs is None: orbs = range(gw.nmo)
         self.orbs = orbs
+        self.mf_nmo = np.shape(mo_coeff)[-1]
+        self.mf_nocc = gw._scf.mol.nelectron//2
+        self.gw_nmo = gw.nmo
+        self.gw_nocc = gw.nocc
         self.mf = gw._scf
         self.mol = gw._scf.mol
         self._scf = gw._scf
-        self.gw_e = gw.mo_energy[:, orbs]
+        self.gw_e = gw.mo_energy
         self.mo_energy = gw._scf.mo_energy
         self.nkpts = gw.nkpts
         self.kpts = gw.kpts
         self.verbose = self.mol.verbose
         self.stdout = gw.stdout
         self.max_memory = gw.max_memory
-
-        #TODO: implement frozen orbs (since kGW needs them)
-        #TODO: unnecessary if we just accept orbs?
-        frozen = 0
-        if frozen > 0:
-            raise NotImplementedError
-        self.frozen = frozen
 
         # DF-KGW must use GDF integrals
         if getattr(self.mf, 'with_df', None):
@@ -302,7 +306,7 @@ class BSE(krhf.TDA):
         self.max_cycle = getattr(__config__, 'eom_rccsd_EOM_max_cycle', 50)
         self.conv_tol = getattr(__config__, 'eom_rccsd_EOM_conv_tol', 1e-7)
 
-        self.frozen = frozen
+        self.frozen = gw.frozen
         self.TDA = TDA
         self.singlet = singlet
         
@@ -313,9 +317,9 @@ class BSE(krhf.TDA):
         self.xy = None
         self.mo_coeff = mo_coeff
         self.mo_occ = mo_occ
-        self._nocc = None
+        # self._nocc = None
         self.nstates = None
-        self._nmo = None
+        # self._nmo = None
         self._keys = set(self.__dict__.keys())
         
     def dump_flags(self, verbose=None):
@@ -323,9 +327,8 @@ class BSE(krhf.TDA):
         log.info('')
         log.info('******** %s ********', self.__class__)
         log.info('method = %s', self.__class__.__name__)
-        nocc = self.nocc
-        nvir = self.nmo - nocc
-        log.info('GW nocc = %d, nvir = %d', nocc, nvir)
+        log.info('MF nocc = %d, nvir = %d', self.mf_nocc, self.mf_nmo - self.mf_nocc)
+        log.info('GW nocc = %d, nvir = %d', self.gw_nocc, self.gw_nmo - self.gw_nocc)
         if self.frozen is not None:
             log.info('frozen = %s', self.frozen)
         logger.info(self, 'max_space = %d', self.max_space)
@@ -340,7 +343,7 @@ class BSE(krhf.TDA):
         return self
     
     def kernel(self, nstates=None):
-        nmo = self.nmo
+        nmo = self.gw_nmo
         naux = self.with_df.get_naoaux()
         nkpts = self.nkpts
         mem_incore = (2*nkpts**2*nmo**2*naux) * 16/1e6
@@ -360,8 +363,8 @@ class BSE(krhf.TDA):
     def vector_size(self):
        '''size of the vector'''
        # nocc = self.nocc
-       nocc = sum([x < self.nocc for x in self.orbs])
-       nmo = len(self.orbs)#bse.nmo
+       nocc = min(sum([x < self.mf_nocc for x in self.orbs]), self.gw_nocc)
+       nmo = min(self.gw_nmo, len(self.orbs))#bse.nmo
        nvir = nmo - nocc
        nkpts = self.nkpts
        if self.TDA:
@@ -383,23 +386,21 @@ class BSE(krhf.TDA):
     def get_diag(self, kLij, eps_body_inv):
         # nmo = self.nmo
         # nocc = self.nocc
-        nocc = sum([x < self.nocc for x in self.orbs])
-        nmo = len(self.orbs)#bse.nmo
+        nocc = min(sum([x < self.mf_nocc for x in self.orbs]), self.gw_nocc)
+        nmo = min(self.gw_nmo, len(self.orbs))#bse.nmo
         nvir = nmo - nocc
         nkpts = self.nkpts
         
         gw_e = self.gw_e
         #WARNING: Change back! TDA
         # gw_e = np.asarray(self.mo_energy)
-        gw_e_occ = gw_e[:, :nocc]
-        gw_e_vir = gw_e[:, nocc:]
+        gw_e_occ = gw_e[:,self.mf_nocc-nocc:self.mf_nocc]
+        gw_e_vir = gw_e[:,self.mf_nocc:self.mf_nocc+nvir]
         
-        # Loo = qkLij[:,:,:,:nocc,:nocc]
-        # Lov = qkLij[:,:,:,:nocc,nocc:]
-        # Lvv = qkLij[:,:,:,nocc:,nocc:]
-        Loo = kLij[:,:,:nocc,:nocc]
-        Lov = kLij[:,:,:nocc,nocc:]
-        Lvv = kLij[:,:,nocc:,nocc:]
+        Loo = kLij[:,:,:nocc, :nocc]
+        Lov = kLij[:,:,:nocc, nocc:]
+        Lvv = kLij[:,:,nocc:, nocc:]
+
         
         diag = np.zeros((nkpts, nocc, nvir), dtype='complex128')
         for i in range(nocc):
@@ -429,23 +430,23 @@ class BSE(krhf.TDA):
         return guess, nroots
 
 
-    @property
-    def nocc(self):
-        return self.get_nocc()
-    @nocc.setter
-    def nocc(self, n):
-        self._nocc = n
+    # @property
+    # def nocc(self):
+    #     return self.get_nocc()
+    # @nocc.setter
+    # def nocc(self, n):
+    #     self._nocc = n
 
-    @property
-    def nmo(self):
-        return self.get_nmo()
-    @nmo.setter
-    def nmo(self, n):
-        self._nmo = n
+    # @property
+    # def nmo(self):
+    #     return self.get_nmo()
+    # @nmo.setter
+    # def nmo(self, n):
+    #     self._nmo = n
 
-    get_nocc = get_nocc
-    get_nmo = get_nmo
-    get_frozen_mask = get_frozen_mask
+    # get_nocc = get_nocc
+    # get_nmo = get_nmo
+    # get_frozen_mask = get_frozen_mask
 
 if __name__ == '__main__':
     from pyscf.pbc import gto as pbcgto
@@ -460,8 +461,8 @@ if __name__ == '__main__':
     # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
     #kpt sampling
     cell = pbcgto.Cell()
-    cell.atom = '''H 0 0 0;
-                H 1.4 0 0'''
+    cell.atom = '''He 0 0 0;
+                He 1.4 0 0'''
     cell.a = np.eye(3)*30
     cell.unit = 'B'
     cell.basis = 'gth-dzvp'
@@ -483,15 +484,15 @@ if __name__ == '__main__':
     nvir = nmo-nocc
     
     from pyscf.pbc.gw import krgw_ac
-    mygw = krgw_ac.KRGWAC(mymf)
+    import krgw_ac_frozen as krgw_ac
+    mygw = krgw_ac.KRGWAC(mymf, frozen=0)
     mygw.linearized = True
     mygw.ac = 'pade'
     # without finite size corrections
     mygw.fc = False
-    orbs = range(nocc-1,nocc+2)
-    mygw.kernel(orbs=orbs)
+    orbs = range(0,nocc+2)
+    mygw.kernel(orbs=range(nmo))
     kgw_e = mygw.mo_energy
-    print('my gw nmo', mygw.nmo)
     print('kgw_e', 27.2114*kgw_e)
     
     _nstates = 2
@@ -571,10 +572,11 @@ if __name__ == '__main__':
     # without finite size corrections
     mygw.fc = False
     mygw.kernel()
+    print(mygw.mo_energy)
     
     bse = BSE(mygw, TDA=True, singlet=True)
     conv, excitations, ekS, xy = bse.kernel(nstates=3)
-
+    
     bse.singlet=False
     conv, excitations, ekT, xy = bse.kernel(nstates=3)
     
