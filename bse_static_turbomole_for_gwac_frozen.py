@@ -24,22 +24,19 @@ Density-fitted. Turbomole-style.
 only AC and maybe CD GW.
 '''
 
-import time
 import numpy as np
-from pyscf import lib, scf, dft, gw, df, symm
+from pyscf import lib, gw, symm, dft
 from pyscf.lib import logger
 from pyscf import __config__
 
 einsum = lib.einsum
-
-# from pyscf.mp.mp2 import get_nocc, get_nmo, get_frozen_mask
     
 REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 # Low excitation filter to avoid numerical instability
 POSTIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
-MO_BASE = getattr(__config__, 'MO_BASE', 1)
+# MO_BASE = getattr(__config__, 'MO_BASE', 1)
 
-def kernel(bse, eris, nstates=None, verbose=logger.NOTE):
+def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     '''static screening BSE excitation energies
 
     Returns:
@@ -49,43 +46,41 @@ def kernel(bse, eris, nstates=None, verbose=logger.NOTE):
     assert(isinstance(bse.mf, dft.rks.RKS) or isinstance(bse.mf, dft.rks_symm.SymAdaptedRKS))
     # assert(bse.frozen == 0 or bse.frozen is None)
     
-    cput0 = (time.perf_counter(), time.time())
     log = logger.Logger(bse.stdout, bse.verbose)
+    #TODO: checking sanity based on the parent class may not make sense here.
+    #not sure.
     if bse.verbose >= logger.WARN:
         bse.check_sanity()
     bse.dump_flags()
     
-    nocc = bse.nocc
-    nmo = bse.nmo
+    if orbs is None:
+        orbs = [x for x in range(bse.mf_nmo)]
+    
+    orbs_nocc = sum([x < bse.mf_nocc for x in orbs])
+    if orbs_nocc > bse.gw_nocc:
+        orbs = [bse.mf_nocc - x for x in range(bse.gw_nocc, 0, -1)] + list(orbs)[orbs_nocc:]
+    orbs_vir = sum([x > bse.mf_nocc for x in orbs])
+    if orbs_vir > bse.gw_nmo - bse.gw_nocc:
+        orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
+   
+    nmo = len(orbs)
+    nocc = sum([x < bse.mf_nocc for x in orbs])
     nvir = nmo - nocc
     
-    if bse.gw.frozen is None:
-        frozen_list = []
-    elif type(bse.gw.frozen) is int:
-        frozen_list = [x for x in range(bse.gw.frozen)]
-    else:
-        frozen_list = bse.gw.frozen
-    not_frozen_gw_orbs = {x for x in range(bse.mf_nmo) if not x in frozen_list}
-    if not set(bse.orbs).issubset(not_frozen_gw_orbs):#len(bse.orbs) > bse.gw_nmo:
+    if nmo > sum([x != 0 for x in bse.gw_e]):
         logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
         raise RuntimeError
     
-    if nstates is None: nstates = bse.nstates
-        
-    mo_energy = bse._scf.mo_energy[bse.orbs]
-    QP_diff = (mo_energy[:nocc, None]-mo_energy[None, nocc:]).T
-    i_mat = 4*einsum('Pia,Qia,ai->PQ', eris.Lov, eris.Lov, 1./QP_diff)
-    i_tilde = np.linalg.inv(np.eye(np.shape(i_mat)[0])-i_mat)
-#    R_tilde = make_R_tilde(bse.mf, eris)
+    if nstates is None: nstates = len(orbs)
     
-    matvec, diag = bse.gen_matvec(eris, i_tilde)
+    matvec, diag = bse.gen_matvec(orbs)
     
     size = nocc*nvir
     if not bse.TDA:
         size *= 2
     
-    # guess = bse.get_init_guess(nstates=nstates)
-    guess, nstates = bse.get_init_guess(nroots=nstates, diag=diag)
+    # guess = bse.get_init_guess(nstates=nstates) #for non-TDA BSE (weird)
+    guess, nstates = bse.get_init_guess(nstates=nstates, orbs=orbs, diag=diag)
         
     nroots = nstates
 
@@ -115,22 +110,16 @@ def kernel(bse, eris, nstates=None, verbose=logger.NOTE):
         for n, en, vn, convn in zip(range(nroots), e, xy, conv):
             logger.info(bse, '  BSE root %d E = %.16g eV  conv = %s',
                         n, en*27.2114, convn)
-        log.timer('BSE', *cput0)
     return conv, nstates, e, xy
     
-def matvec(bse, r, eris, i_tilde, gw_e=None):
+def matvec(bse, r, eris, i_tilde, orbs):
     '''matrix-vector multiplication'''
    
-    nocc = bse.nocc
-    nmo = bse.nmo
+    nocc = sum([x < bse.mf_nocc for x in orbs])
+    nmo = len(orbs)
     nvir = nmo - nocc
     
-    if gw_e is None:
-        gw_e = bse.gw_e
-        
-    # gw_e_occ = gw_e[:nocc]
-    # gw_e_vir = gw_e[nocc:]
-    
+    gw_e = bse.gw_e
     gw_e_occ = gw_e[bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = gw_e[bse.mf_nocc:bse.mf_nocc+nvir]
     
@@ -186,14 +175,13 @@ from types import SimpleNamespace
 #    return R_tilde
 
 from pyscf.ao2mo import _ao2mo
-def get_Lpq(gw, orbs):
-    # mo_coeff = np.array(gw._scf.mo_coeff)
+def make_imds(gw, orbs):
     mf_nocc = gw._scf.mol.nelectron//2
-    # nmo = gw._scf.mo_energy.size
     mo_coeff = np.array(gw._scf.mo_coeff)[:,orbs]
-    nocc = min(sum([x < mf_nocc for x in orbs]), gw.nocc)#sum([x < gw.nocc for x in orbs])
-    nmo = min(gw.nmo, len(orbs))
+    nocc = sum([x < mf_nocc for x in orbs])
+    nmo = len(orbs)
     nvir = nmo - nocc
+  
     
     with_df = gw.with_df
  
@@ -219,7 +207,13 @@ def get_Lpq(gw, orbs):
     eris.Lov = Lov
     eris.Lvv = Lvv
 
-    return eris
+    mo_energy = gw._scf.mo_energy[np.ix_(orbs)]
+    QP_diff = (mo_energy[:nocc, None]-mo_energy[None, nocc:]).T
+    i_mat = 4*einsum('Pia,Qia,ai->PQ', eris.Lov, eris.Lov, 1./QP_diff)
+    i_tilde = np.linalg.inv(np.eye(np.shape(i_mat)[0])-i_mat)
+#    R_tilde = make_R_tilde(bse.mf, eris)
+    
+    return eris, i_tilde
     
 from pyscf.tdscf import rhf
 class BSE(rhf.TDA):
@@ -241,20 +235,16 @@ class BSE(rhf.TDA):
     _keys = {
         'frozen', 'mol', 'with_df', 'mo_energy', 'mo_coeff', 'mo_occ'
     }
-    def __init__(self, gw, orbs=None, TDA=True, singlet=True,  mo_coeff=None, mo_occ=None):
+    def __init__(self, gw, TDA=True, singlet=True,  mo_coeff=None, mo_occ=None):
         assert(isinstance(gw._scf, dft.rks.RKS) or isinstance(gw._scf, dft.rks_symm.SymAdaptedRKS))
         if mo_coeff  is None: mo_coeff  = gw._scf.mo_coeff
         if mo_occ    is None: mo_occ    = gw._scf.mo_occ
         
         self.gw = gw
-        if orbs is None: orbs = range(gw.nmo)
-        self.orbs = orbs
         self.mf_nmo = np.shape(mo_coeff)[-1]
         self.mf_nocc = gw._scf.mol.nelectron//2
         self.gw_nmo = gw.nmo
         self.gw_nocc = gw.nocc
-        self.nocc = min(sum([x < self.mf_nocc for x in orbs]), self.gw_nocc)
-        self.nmo = min(self.gw_nmo, len(orbs))
         self.mf = gw._scf
         self.mol = gw._scf.mol
         self._scf = gw._scf
@@ -289,7 +279,6 @@ class BSE(rhf.TDA):
         self.mo_coeff = mo_coeff
         self.mo_occ = mo_occ
         # self._nocc = None
-        self.eris = None
         # self.nstates = None
         # self._nmo = None
         self._keys = set(self.__dict__.keys())
@@ -300,8 +289,8 @@ class BSE(rhf.TDA):
         log.info('')
         log.info('******** %s ********', self.__class__)
         log.info('method = %s', self.__class__.__name__)
+        log.info('MF nocc = %d, nvir = %d', self.mf_nocc, self.mf_nmo - self.mf_nocc)
         log.info('GW nocc = %d, nvir = %d', self.gw_nocc, self.gw_nmo - self.gw_nocc)
-        log.info('BSE nocc = %d, nvir = %d', self.nocc, self.nmo - self.nocc)
         if self.frozen is not None:
             log.info('frozen = %s', self.frozen)
         logger.info(self, 'max_space = %d', self.max_space)
@@ -321,46 +310,28 @@ class BSE(rhf.TDA):
             log.info('nstates = %d triplet', self.nstates)
         return self
     
-    def kernel(self, eris=None, nstates=None):
-        
-        if nstates is None:
-            nstates = self.nstates
-        else:
-            self.nstates = nstates
-        
-        if eris is None:
-            eris = self.get_Lpq()
-            self.eris = eris
-            
-        self.conv, self.nstates, self.e, self.xy = kernel(self, eris, nstates=nstates)
-    
-        return self.conv, self.nstates, self.e, self.xy
-
-    def get_Lpq(self):
-        eris = get_Lpq(self.gw, self.orbs)
-        self.eris = eris
-        return eris
-
     matvec = matvec
+    make_imds = make_imds
     
-    def gen_matvec(self, eris, i_tilde, gw_e=None):
+    def kernel(self, nstates=None, orbs=None):
+        cput0 = (logger.process_clock(), logger.perf_counter())
+        self.conv, self.nstates, self.e, self.xy = kernel(self, nstates=nstates, orbs=orbs)
+        logger.timer(self, 'BSE', *cput0)
+        return self.conv, self.nstates, self.e, self.xy
     
-        if gw_e is None:
-            gw_e = self.gw_e
-        diag = self.get_diag(eris, i_tilde, self.gw_e)
-        matvec = lambda xs: [self.matvec(x, eris, i_tilde, gw_e) for x in xs]
+    def gen_matvec(self, orbs):
+        eris, i_tilde = make_imds(self.gw, orbs)
+        diag = self.get_diag(eris, i_tilde, orbs)
+        matvec = lambda xs: [self.matvec(x, eris, i_tilde, orbs) for x in xs]
         return matvec, diag
 
-    def get_diag(self, eris, i_tilde, gw_e=None):
-        nmo = self.nmo
-        nocc = self.nocc
+    def get_diag(self, eris, i_tilde, orbs):
+        nocc = sum([x < self.mf_nocc for x in orbs])
+        nmo = len(orbs)
         nvir = nmo - nocc
         
-        if gw_e is None:
-            gw_e = self.gw_e
-        
-        gw_e_occ = gw_e[self.mf_nocc-nocc:self.mf_nocc]
-        gw_e_vir = gw_e[self.mf_nocc:self.mf_nocc+nvir]
+        gw_e_occ = self.gw_e[self.mf_nocc-nocc:self.mf_nocc]
+        gw_e_vir = self.gw_e[self.mf_nocc:self.mf_nocc+nvir]
         
         diag = np.zeros((nocc,nvir))
         for i in range(nocc):
@@ -376,7 +347,7 @@ class BSE(rhf.TDA):
         else: 
             return np.hstack((diag, -diag))
     
-    #this guess works for TDA=False, but not with frozen orbs. 
+    #TODO: this guess works for TDA=False, but not with frozen orbs. 
     # def get_init_guess(self, nstates=None, gw_e=None):
        
     #     if nstates is None: nstates = self.nstates
@@ -407,22 +378,21 @@ class BSE(rhf.TDA):
     #     # guess = BSE.init_guess(self, self.mf)
     #     return guess
     
-    def vector_size(self):
+    def vector_size(self, orbs):
         '''size of the vector'''
-        # nocc = self.nocc
-        nocc = self.nocc #min(sum([x < self.mf_nocc for x in self.orbs]), self.gw_nocc)
-        nmo = self.nmo #min(self.gw_nmo, len(self.orbs))
+        nocc = sum([x < self.mf_nocc for x in orbs])
+        nmo = len(orbs)
         nvir = nmo - nocc
         if self.TDA:
             return nocc*nvir
         else: 
             return 2*nocc*nvir
        
-    def get_init_guess(self, nroots=1, diag=None):
+    def get_init_guess(self, nstates, orbs, diag=None):
         idx = diag.argsort()
-        size = self.vector_size()
+        size = self.vector_size(orbs)
         dtype = getattr(diag, 'dtype', self.mo_coeff[0].dtype)
-        nroots = min(nroots, size)
+        nroots = min(nstates, size)
         guess = []
         for i in idx[:nroots]:
             g = np.zeros(size, dtype)
@@ -468,17 +438,17 @@ if __name__ == '__main__':
      nmo = mf.mo_energy.size
      nvir = nmo-nocc
 
-     mygw = gw.GW(mf, freq_int='ac')
-     mygw.kernel(orbs=range(0,nmo))
+     mygw = gw.GW(mf, frozen=0, freq_int='ac')
+     mygw.kernel(orbs=range(nmo))
      gw_e = mygw.mo_energy
      print('gw_e', gw_e)
 
      #Technically, should be TDA=False to compare with lit values,
      #but the final two singlet exc. converged to something weird (weird symm too),
      #so I had to set TDA=True.
-     bse = BSE(mygw, orbs=range(0,nmo), TDA=True, singlet=True)
+     bse = BSE(mygw, TDA=True, singlet=True)
      bse.verbose = 9
-     conv, excitations, e, xy = bse.kernel(nstates=4)
+     conv, excitations, e, xy = bse.kernel(nstates=4, orbs=range(nmo))
      print(e*27.2114)
      assert(abs(27.2114*bse.e[0] - 8.09129) < 5*1e-2)
      assert(abs(27.2114*bse.e[1] - 9.78553) < 5*1e-2)
@@ -487,7 +457,7 @@ if __name__ == '__main__':
      print('BSE singlet matches lit')
 
      bse.singlet=False
-     conv, excitations, e, xy = bse.kernel(nstates=4)
+     conv, excitations, e, xy = bse.kernel(nstates=4, orbs=range(nmo))
      print(e*27.2114)
      assert(abs(27.2114*bse.e[0] - 7.61802) < 5*1e-2)
      assert(abs(27.2114*bse.e[1] - 9.59825) < 5*1e-2)

@@ -49,26 +49,24 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
 #    assert(isinstance(bse.mf, dft.rks.RKS) or isinstance(bse.mf, dft.rks_symm.SymAdaptedRKS))
     
     log = logger.Logger(bse.stdout, bse.verbose)
-
     bse.dump_flags()
-    
-    if bse.gw.frozen is None:
-        frozen_list = []
-    elif type(bse.gw.frozen) is int:
-        frozen_list = [x for x in range(bse.gw.frozen)]
-    else:
-        frozen_list = bse.gw.frozen
-    not_frozen_gw_orbs = {x for x in range(bse.mf_nmo) if not x in frozen_list}
-    
+
     if orbs is None:
-        orbs = list(not_frozen_gw_orbs)
+        orbs = [x for x in range(bse.mf_nmo)]
     
-    if not set(orbs).issubset(not_frozen_gw_orbs):
-        logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
-        raise RuntimeError
-        
+    orbs_nocc = sum([x < bse.mf_nocc for x in orbs])
+    if orbs_nocc > bse.gw_nocc:
+        orbs = [bse.mf_nocc - x for x in range(bse.gw_nocc, 0, -1)] + list(orbs)[orbs_nocc:]
+    orbs_vir = sum([x > bse.mf_nocc for x in orbs])
+    if orbs_vir > bse.gw_nmo - bse.gw_nocc:
+        orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
+    
     nocc = sum([x < bse.mf_nocc for x in orbs])
     nmo = len(orbs)
+
+    if nmo > sum([x != 0 for x in bse.gw_e[0]]):
+        logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
+        raise RuntimeError
 
     nkpts = bse.nkpts
     # kpts = bse.kpts
@@ -115,7 +113,6 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
         for n, en, vn, convn in zip(range(nroots), e, xy, conv):
             logger.info(bse, '  BSE root %d E = %.16g eV  conv = %s',
                         n, en*27.2114, convn)
-        # log.timer('BSE', *cput0)
     return conv, nstates, e, xy
     
 def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
@@ -136,7 +133,6 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
     
-    # qkLij, qeps_body_inv, all_kidx_r = make_imds(bse.gw)
     Loo = qkLij[:,:,:,:nocc, :nocc]
     Lov = qkLij[:,:,:,:nocc, nocc:]
     Lvv = qkLij[:,:,:,nocc:, nocc:]
@@ -192,7 +188,7 @@ from pyscf.ao2mo.incore import _conc_mos
 def make_imds(gw, orbs):
     mo_energy = np.array(gw._scf.mo_energy)[:,orbs] #mf mo_energy
     mo_coeff = np.array(gw._scf.mo_coeff)[:,:,orbs]
-    nmo = min(gw.nmo, len(orbs))#bse.nmo
+    nmo = len(orbs)
     nao = np.shape(gw._scf.mo_coeff)[-1]
     nkpts = gw.nkpts
     kpts = gw.kpts
@@ -281,10 +277,10 @@ class BSE(krhf.TDA):
         self.mf = gw._scf
         self.mol = gw._scf.mol
         self._scf = gw._scf
-        self.gw_e = gw.mo_energy
-        self.mo_energy = gw._scf.mo_energy
         self.nkpts = gw.nkpts
         self.kpts = gw.kpts
+        self.gw_e = gw.mo_energy
+        self.mo_energy = gw._scf.mo_energy
         self.verbose = self.mol.verbose
         self.stdout = gw.stdout
         self.max_memory = gw.max_memory
@@ -298,6 +294,7 @@ class BSE(krhf.TDA):
         self.max_space = getattr(__config__, 'eom_rccsd_EOM_max_space', 20)
         self.max_cycle = getattr(__config__, 'eom_rccsd_EOM_max_cycle', 50)
         self.conv_tol = getattr(__config__, 'eom_rccsd_EOM_conv_tol', 1e-7)
+        self.nstates = getattr(__config__, 'tdscf_rhf_TDA_nstates', 3)
 
         self.frozen = gw.frozen
         self.TDA = TDA
@@ -310,8 +307,8 @@ class BSE(krhf.TDA):
         self.xy = None
         self.mo_coeff = mo_coeff
         self.mo_occ = mo_occ
+        # self.nstates = None
         # self._nocc = None
-        self.nstates = None
         # self._nmo = None
         self._keys = set(self.__dict__.keys())
         
@@ -474,7 +471,7 @@ if __name__ == '__main__':
     nvir = nmo-nocc
     
     gw_orbs = range(nmo)#range(nmo)
-    bse_orbs = None#range(nmo-3)
+    bse_orbs = range(nmo-3)
     _nstates = 5
     
     from pyscf.pbc.gw import krgw_ac
@@ -513,11 +510,11 @@ if __name__ == '__main__':
     gw_e = mygw.mo_energy
     sorted_gw_gaps = sorted([27.2114*(a-i) for a in gw_e[nocc:nocc+gw_vir] for i in gw_e[nocc-gw_nocc:nocc]])
 
-    mybse = bse.BSE(mygw, orbs=bse_orbs, TDA=True)
-    conv, excitations, eS, xy = mybse.kernel(nstates=_nstates)
+    mybse = bse.BSE(mygw, TDA=True)
+    conv, excitations, eS, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
    
     mybse.singlet=False
-    conv, excitations, eT, xy = mybse.kernel(nstates=_nstates)
+    conv, excitations, eT, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
     
     # print(27.2114*eS, 27.2114*eT)
     
@@ -544,7 +541,7 @@ if __name__ == '__main__':
     cell.unit = 'B'
     cell.basis = 'gth-szv'
     cell.pseudo = 'gth-pade'
-    cell.build(verbose=2)
+    cell.build(verbose=9)
     
     kmesh = [2,1,1]
     scaled_center=[0.0, 0.0, 0.0]
