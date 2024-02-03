@@ -22,30 +22,24 @@ static screening BSE with iterative diagonalization,
 with or without TDA, singlet or triplet excitations. 
 Density-fitted. Turbomole-style.
 Periodic.
-Requires Nk^2 * Naux * Nmo^2 memory (sim. to hybrid f'nl')
+Frozen orbitals.
+Requires Nk^2 * Naux * Nmo^2 memory (sim. to hybrid f'nl)
 '''
 
-import time
-# from functools import reduce
 import numpy as np
 from pyscf import lib
 from pyscf.pbc import dft
 from pyscf.lib import logger
 from pyscf import __config__
-# import math
-# from pyscf.scf import hf_symm
-# from pyscf.data import nist
 
 einsum = lib.einsum
-
-# from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
     
 REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 # Low excitation filter to avoid numerical instability
 POSTIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
-MO_BASE = getattr(__config__, 'MO_BASE', 1)
+# MO_BASE = getattr(__config__, 'MO_BASE', 1)
 
-def kernel(bse, nstates=None, verbose=logger.NOTE):
+def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     '''static screening BSE excitation energies
 
     Returns:
@@ -53,40 +47,45 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
     '''
     #mf must be DFT; for HF use xc = 'hf'
 #    assert(isinstance(bse.mf, dft.rks.RKS) or isinstance(bse.mf, dft.rks_symm.SymAdaptedRKS))
-    # assert(bse.frozen == 0 or bse.frozen is None)
     
-    # cput0 = (time.time(), time.perf_counter())
     log = logger.Logger(bse.stdout, bse.verbose)
-    # if bse.verbose >= logger.WARN:
-    #     bse.check_sanity()
+
     bse.dump_flags()
     
-    # nocc = bse.nocc
-    # nmo = bse.nmo
+    if bse.gw.frozen is None:
+        frozen_list = []
+    elif type(bse.gw.frozen) is int:
+        frozen_list = [x for x in range(bse.gw.frozen)]
+    else:
+        frozen_list = bse.gw.frozen
+    not_frozen_gw_orbs = {x for x in range(bse.mf_nmo) if not x in frozen_list}
     
-    nocc = min(sum([x < bse.mf_nocc for x in bse.orbs]), bse.gw_nocc)
-    nmo = min(bse.gw_nmo, len(bse.orbs))#bse.nmo
+    if orbs is None:
+        orbs = list(not_frozen_gw_orbs)
     
-    #TODO: Instead, check that bse.orbs is a subset of non-frozen gw orbs.
-    if len(bse.orbs) > bse.gw_nmo:
+    if not set(orbs).issubset(not_frozen_gw_orbs):
         logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
         raise RuntimeError
+        
+    nocc = sum([x < bse.mf_nocc for x in orbs])
+    nmo = len(orbs)
 
-    
     nkpts = bse.nkpts
     # kpts = bse.kpts
     nvir = nmo - nocc
     
-    if nstates is None: nstates = 1
     
-    matvec, diag = bse.gen_matvec()
+    matvec, diag = bse.gen_matvec(orbs)
     
     size = nocc*nvir
     if not bse.TDA:
         size *= 2
     
-    guess, nstates = bse.get_init_guess(nroots=nstates, diag=diag)
+    if nstates is None:
+        nstates = len(orbs)
         
+    guess, nstates = bse.get_init_guess(nstates=nstates, orbs=orbs, diag=diag)
+    
     nroots = nstates
 
     def precond(r, e0, x0):
@@ -119,13 +118,11 @@ def kernel(bse, nstates=None, verbose=logger.NOTE):
         # log.timer('BSE', *cput0)
     return conv, nstates, e, xy
     
-def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r):
+def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     '''matrix-vector multiplication'''
    
-    # nocc = sum([x < bse.nocc for x in bse.orbs])
-    # nmo = len(bse.orbs)#bse.nmo
-    nocc = min(sum([x < bse.mf_nocc for x in bse.orbs]), bse.gw_nocc)
-    nmo = min(bse.gw_nmo, len(bse.orbs))#bse.nmo
+    nocc = sum([x < bse.mf_nocc for x in orbs])
+    nmo = len(orbs)
     nkpts = bse.nkpts
     nvir = nmo - nocc
     
@@ -188,15 +185,13 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r):
 #
 #        return np.hstack((Hr1.ravel(), -Hr2.ravel()))
 
-#TODO: I don't know if we want to store for all kpts kL or make on the fly
-#For memory, will probably need to take the slower approach and make the integrals
-#on the fly
+
 from pyscf.pbc.gw.krgw_ac import get_rho_response
 from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo.incore import _conc_mos
 def make_imds(gw, orbs):
-    mo_energy = np.array(gw._scf.mo_energy)[:,np.ix_(orbs)[0]] #mf mo_energy
-    mo_coeff = np.array(gw._scf.mo_coeff)[:,:,np.ix_(orbs)[0]]
+    mo_energy = np.array(gw._scf.mo_energy)[:,orbs] #mf mo_energy
+    mo_coeff = np.array(gw._scf.mo_coeff)[:,:,orbs]
     nmo = min(gw.nmo, len(orbs))#bse.nmo
     nao = np.shape(gw._scf.mo_coeff)[-1]
     nkpts = gw.nkpts
@@ -273,14 +268,12 @@ class BSE(krhf.TDA):
         'kpts', 'nkpts', 'mo_energy', 'mo_coeff', 'mo_occ',
     }
     
-    def __init__(self, gw, orbs=None, TDA=True, singlet=True,  mo_coeff=None, mo_occ=None):
+    def __init__(self, gw, TDA=True, singlet=True,  mo_coeff=None, mo_occ=None):
         assert(isinstance(gw._scf, dft.krks.KRKS) or isinstance(gw._scf, dft.krks_symm.SymAdaptedKRKS))
         if mo_coeff  is None: mo_coeff  = gw._scf.mo_coeff
         if mo_occ    is None: mo_occ    = gw._scf.mo_occ
         
         self.gw = gw
-        if orbs is None: orbs = range(gw.nmo)
-        self.orbs = orbs
         self.mf_nmo = np.shape(mo_coeff)[-1]
         self.mf_nocc = gw._scf.mol.nelectron//2
         self.gw_nmo = gw.nmo
@@ -322,8 +315,8 @@ class BSE(krhf.TDA):
         # self._nmo = None
         self._keys = set(self.__dict__.keys())
         
-    def dump_flags(self, verbose=None):
-        log = logger.new_logger(self, verbose)
+    def dump_flags(self):
+        log = logger.new_logger(self, self.verbose)
         log.info('')
         log.info('******** %s ********', self.__class__)
         log.info('method = %s', self.__class__.__name__)
@@ -342,7 +335,7 @@ class BSE(krhf.TDA):
         logger.info(self, 'singlet = %s', self.singlet)
         return self
     
-    def kernel(self, nstates=None):
+    def kernel(self, nstates=None, orbs=None):
         nmo = self.gw_nmo
         naux = self.with_df.get_naoaux()
         nkpts = self.nkpts
@@ -352,19 +345,21 @@ class BSE(krhf.TDA):
             logger.warn(self, 'Memory may not be enough!')
             raise NotImplementedError        
 
-        self.conv, self.nstates, self.e, self.xy = kernel(self, nstates=nstates)
-    
+        cput0 = (logger.process_clock(), logger.perf_counter())
+        self.dump_flags()
+        self.conv, self.nstates, self.e, self.xy = kernel(self, nstates=nstates, orbs=orbs)
+        logger.timer(self, 'BSE', *cput0)
         return self.conv, self.nstates, self.e, self.xy
 
     matvec = matvec
     make_imds = make_imds
     
     
-    def vector_size(self):
+    def vector_size(self, orbs):
        '''size of the vector'''
        # nocc = self.nocc
-       nocc = min(sum([x < self.mf_nocc for x in self.orbs]), self.gw_nocc)
-       nmo = min(self.gw_nmo, len(self.orbs))#bse.nmo
+       nocc = sum([x < self.mf_nocc for x in orbs])
+       nmo = len(orbs)
        nvir = nmo - nocc
        nkpts = self.nkpts
        if self.TDA:
@@ -372,22 +367,17 @@ class BSE(krhf.TDA):
        else: 
            return 2*nkpts*nocc*nvir
     
-    def gen_matvec(self):
-        # nmo = self.nmo
-        # nocc = self.nocc
-        # nvir = nmo - nocc
+    def gen_matvec(self, orbs):
     
-        qkLij, qeps_body_inv, all_kidx_r = make_imds(self.gw, self.orbs)
+        qkLij, qeps_body_inv, all_kidx_r = make_imds(self.gw, orbs)
         
-        diag = self.get_diag(qkLij[0,:], qeps_body_inv[0])
-        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx_r) for x in xs]
+        diag = self.get_diag(qkLij[0,:], qeps_body_inv[0], orbs)
+        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx_r, orbs) for x in xs]
         return matvec, diag
 
-    def get_diag(self, kLij, eps_body_inv):
-        # nmo = self.nmo
-        # nocc = self.nocc
-        nocc = min(sum([x < self.mf_nocc for x in self.orbs]), self.gw_nocc)
-        nmo = min(self.gw_nmo, len(self.orbs))#bse.nmo
+    def get_diag(self, kLij, eps_body_inv, orbs):
+        nocc = sum([x < self.mf_nocc for x in orbs])
+        nmo = len(orbs)
         nvir = nmo - nocc
         nkpts = self.nkpts
         
@@ -417,11 +407,11 @@ class BSE(krhf.TDA):
         else: 
             return np.hstack((diag, -diag))
         
-    def get_init_guess(self, nroots=1, diag=None):
+    def get_init_guess(self, nstates, orbs, diag=None):
         idx = diag.argsort()
-        size = self.vector_size()
+        size = self.vector_size(orbs)
         dtype = getattr(diag, 'dtype', self.mo_coeff[0].dtype)
-        nroots = min(nroots, size)
+        nroots = nstates
         guess = []
         for i in idx[:nroots]:
             g = np.zeros(size, dtype)
@@ -452,7 +442,7 @@ if __name__ == '__main__':
     from pyscf.pbc import gto as pbcgto
     from pyscf import gto
     from pyscf.pbc.tools import pyscf_ase, lattice
-    import bse
+    import bse_static_turbomole_for_gwac_frozen as bse
     
     ##########################################################
     # same as molecular BSE for large cell size with cell.dim = 0. 
@@ -463,7 +453,7 @@ if __name__ == '__main__':
     cell = pbcgto.Cell()
     cell.atom = '''He 0 0 0;
                 He 1.4 0 0'''
-    cell.a = np.eye(3)*30
+    cell.a = np.eye(3)*50
     cell.unit = 'B'
     cell.basis = 'gth-dzvp'
     cell.pseudo = 'gth-pade'
@@ -483,25 +473,30 @@ if __name__ == '__main__':
     nmo = np.shape(mymf.mo_energy)[-1]
     nvir = nmo-nocc
     
+    gw_orbs = range(nmo)#range(nmo)
+    bse_orbs = None#range(nmo-3)
+    _nstates = 5
+    
     from pyscf.pbc.gw import krgw_ac
     import krgw_ac_frozen as krgw_ac
-    mygw = krgw_ac.KRGWAC(mymf, frozen=0)
+    mygw = krgw_ac.KRGWAC(mymf)
     mygw.linearized = True
     mygw.ac = 'pade'
     # without finite size corrections
     mygw.fc = False
-    orbs = range(0,nocc+2)
-    mygw.kernel(orbs=range(nmo))
+    mygw.kernel(orbs=gw_orbs)
     kgw_e = mygw.mo_energy
-    print('kgw_e', 27.2114*kgw_e)
+    gw_nocc = mygw.nocc
+    gw_vir = mygw.nmo - gw_nocc
+    sorted_kgw_gaps = sorted([27.2114*(a-i) for a in kgw_e[0][nocc:nocc+gw_vir] for i in kgw_e[0][nocc-gw_nocc:nocc]])
     
-    _nstates = 2
-    mybse = BSE(mygw, orbs=orbs, TDA=True, singlet=True)
-    conv, excitations, ekS, xy = mybse.kernel(nstates=_nstates)
+    mybse = BSE(mygw, TDA=True, singlet=True)
+    conv, excitations, ekS, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
     
     mybse.singlet=False
-    conv, excitations, ekT, xy = mybse.kernel(nstates=_nstates)
-    print('ekS, ekT', ekS*27.2114, ekT*27.2114)
+    conv, excitations, ekT, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
+    
+    # print(27.2114*ekS, 27.2114*ekT)
     
     #molecule
     mol = cell.to_mol()
@@ -512,26 +507,26 @@ if __name__ == '__main__':
     mf.xc = 'pbe'
     mf.kernel()
 
-    nocc = mol.nelectron//2
-    nmo = mf.mo_energy.size
-    nvir = nmo-nocc
-
     from pyscf import gw
     mygw = gw.GW(mf, freq_int='ac')
-    mygw.kernel(orbs=orbs)
+    mygw.kernel(orbs=gw_orbs)
     gw_e = mygw.mo_energy
-    print('gw_e', 27.2114*gw_e)
+    sorted_gw_gaps = sorted([27.2114*(a-i) for a in gw_e[nocc:nocc+gw_vir] for i in gw_e[nocc-gw_nocc:nocc]])
 
-    mybse = bse.BSE(mygw, orbs=orbs, TDA=True)
+    mybse = bse.BSE(mygw, orbs=bse_orbs, TDA=True)
     conv, excitations, eS, xy = mybse.kernel(nstates=_nstates)
    
     mybse.singlet=False
     conv, excitations, eT, xy = mybse.kernel(nstates=_nstates)
-    print('eS, eT', eS*27.2114, eT*27.2114)
     
-    assert(np.all([abs(27.2114*(ekS[i] - eS[i])) < 0.02+abs(27.2114*(kgw_e[0][i+1]-kgw_e[0][i]-(gw_e[i+1]-gw_e[i]))) for i in range(1)]))
-    assert(np.all([abs(27.2114*(ekT[i] - eT[i])) < 0.02+abs(27.2114*(kgw_e[0][i+1]-kgw_e[0][i]-(gw_e[i+1]-gw_e[i]))) for i in range(1)]))
+    # print(27.2114*eS, 27.2114*eT)
     
+    for i in range(_nstates):
+        assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005+abs(sorted_kgw_gaps[i]-sorted_gw_gaps[i]))
+        print(str(i)+' singlet agrees to within 0.005 eV')    
+        assert(abs(27.2114*(ekT[i] - eT[i])) < 0.005+abs(sorted_kgw_gaps[i]-sorted_gw_gaps[i]))
+        print(str(i)+' triplet agrees to within 0.005 eV')  
+        
     print('BSE for a large cell with cell.dim = 0 is the same as molecular BSE \
           for singlets and triplets!')
 
@@ -549,7 +544,7 @@ if __name__ == '__main__':
     cell.unit = 'B'
     cell.basis = 'gth-szv'
     cell.pseudo = 'gth-pade'
-    cell.build()
+    cell.build(verbose=2)
     
     kmesh = [2,1,1]
     scaled_center=[0.0, 0.0, 0.0]
@@ -572,13 +567,14 @@ if __name__ == '__main__':
     # without finite size corrections
     mygw.fc = False
     mygw.kernel()
-    print(mygw.mo_energy)
+    
+    _nstates = 5
     
     bse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, ekS, xy = bse.kernel(nstates=3)
+    conv, excitations, ekS, xy = bse.kernel()
     
     bse.singlet=False
-    conv, excitations, ekT, xy = bse.kernel(nstates=3)
+    conv, excitations, ekT, xy = bse.kernel()
     
     #supercell
     from pyscf.pbc.tools.pbc import super_cell 
@@ -605,24 +601,31 @@ if __name__ == '__main__':
     mygw.kernel()
     
     bse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, eS, xy = bse.kernel(nstates=3)
+    conv, excitations, eS, xy = bse.kernel()
 
     bse.singlet=False
-    conv, excitations, eT, xy = bse.kernel(nstates=3)
+    conv, excitations, eT, xy = bse.kernel()
     
-    assert(np.all([27.2114*(ekS[i] - eS[i]) < 0.01 for i in range(3)]))
-    assert(np.all([27.2114*(ekT[i] - eT[i]) < 0.01 for i in range(3)]))
+    for i in range(_nstates):
+        assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005)
+        print(str(i)+' singlet matches to within 0.005 eV')
+        assert(abs(27.2114*(ekT[i] - eT[i])) < 0.005)
+        print(str(i)+' triplet matches to within 0.005 eV')
     
     print('BSE supercell at Gamma pt matches BSE unit cell with kpt sampling \
           \n for singlets and triplets!')
+    
+    import sys
+    sys.exit()
+    
+    
+    
+    
     
     ##########################################################
     # same as kTDA when replace GW energies with MF ones and turn off screening (not just at Gamma pt)
     # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
     #WARNING: Have to modify pbc code to pass this test
-    
-    import sys
-    sys.exit()
     
     from pyscf.pbc.gw import krgw_ac
     #kpt sampling
