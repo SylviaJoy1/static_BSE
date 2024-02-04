@@ -31,10 +31,10 @@ from pyscf import lib
 from pyscf.pbc import dft
 from pyscf.lib import logger
 from pyscf import __config__
-
+from pyscf.pbc.lib.kpts_helper import gamma_point
 einsum = lib.einsum
     
-REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
+REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
 # Low excitation filter to avoid numerical instability
 POSTIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
 # MO_BASE = getattr(__config__, 'MO_BASE', 1)
@@ -86,7 +86,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     nroots = nstates
 
     def precond(r, e0, x0):
-        return r/(e0-diag+1e-12)
+        return r/(e0-diag+1e-8)
 
     if bse.TDA:
         eig = lib.davidson1
@@ -94,7 +94,8 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
         eig = lib.davidson_nosym1
     
     # GHF or customized RHF/UHF may be of complex type
-    real_system = (bse._scf.mo_coeff[0].dtype == np.double)
+    real_system = (gamma_point(bse._scf.kpts) and
+                       bse._scf.mo_coeff[0].dtype == np.double)
     
     def pickeig(w, v, nroots, envs):
         real_idx = np.where((abs(w.imag) < REAL_EIG_THRESHOLD) &
@@ -394,16 +395,17 @@ class BSE(krhf.TDA):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
                 diag[:,i,a] -= einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
                 #WARNING: Change back! TDA
-                # diag[kn,i,a] -= einsum('P, P->', Loo[kn,:,i,i].conj(), Lvv[kn,:,a,a])
+                # diag[:,i,a] -= einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += 2*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
         if self.TDA:
             return diag
         else: 
-            return np.hstack((diag, -diag))
+            raise NotImplementedError
+            # return np.hstack((diag, -diag))
         
-    def get_init_guess(self, nstates, orbs, diag=None):
+    def get_init_guess(self, nstates, orbs, diag=None):        
         idx = diag.argsort()
         size = self.vector_size(orbs)
         dtype = getattr(diag, 'dtype', self.mo_coeff[0].dtype)
@@ -439,6 +441,7 @@ if __name__ == '__main__':
     from pyscf import gto
     from pyscf.pbc.tools import pyscf_ase, lattice
     import bse_static_turbomole_for_gwac_frozen as bse
+
     
     ##########################################################
     # same as molecular BSE for large cell size with cell.dim = 0. 
@@ -470,7 +473,7 @@ if __name__ == '__main__':
     nvir = nmo-nocc
     
     gw_orbs = range(nmo)#range(nmo)
-    bse_orbs = range(nmo-3)
+    bse_orbs = range(nmo)
     _nstates = 5
     
     from pyscf.pbc.gw import krgw_ac
@@ -492,8 +495,6 @@ if __name__ == '__main__':
     mybse.singlet=False
     conv, excitations, ekT, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
     
-    # print(27.2114*ekS, 27.2114*ekT)
-    
     #molecule
     mol = cell.to_mol()
     mol.build()
@@ -514,8 +515,6 @@ if __name__ == '__main__':
    
     mybse.singlet=False
     conv, excitations, eT, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
-    
-    # print(27.2114*eS, 27.2114*eT)
     
     for i in range(_nstates):
         assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005+abs(sorted_kgw_gaps[i]-sorted_gw_gaps[i]))
@@ -540,7 +539,7 @@ if __name__ == '__main__':
     cell.unit = 'B'
     cell.basis = 'gth-szv'
     cell.pseudo = 'gth-pade'
-    cell.build(verbose=9)
+    cell.build(verbose=2)
     
     kmesh = [2,1,1]
     scaled_center=[0.0, 0.0, 0.0]
@@ -610,13 +609,10 @@ if __name__ == '__main__':
     
     print('BSE supercell at Gamma pt matches BSE unit cell with kpt sampling \
           \n for singlets and triplets!')
-    
+          
+          
     import sys
     sys.exit()
-    
-    
-    
-    
     
     ##########################################################
     # same as kTDA when replace GW energies with MF ones and turn off screening (not just at Gamma pt)
@@ -654,19 +650,27 @@ if __name__ == '__main__':
     mygw.fc = False
     mygw.kernel()
     
+    _nstates = 5
+    
     #WARNING: Must change gw_e to mf.mo_energy and remove screening!
     mybse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, ekS, xy = mybse.kernel(nstates=3)
+    conv, excitations, ekS, xy = mybse.kernel(nstates = _nstates)
 
     mybse.singlet=False
-    conv, excitations, ekT, xy = mybse.kernel(nstates=3)
+    conv, excitations, ekT, xy = mybse.kernel(nstates = _nstates)
     
     mypbctd = mymf.TDA()
-    TDAeS = mypbctd.run(nstates=3).e
-    TDAeT = mypbctd.run(nstates=3, singlet=False).e
+    TDAeS = mypbctd.run(nstates = _nstates).e
+    TDAeT = mypbctd.run(nstates = _nstates, singlet = False).e
     
-    assert(np.all([27.2114*(ekS[i] - TDAeS[0][i]) < 0.001 for i in range(3)]))
-    assert(np.all([27.2114*(ekT[i] - TDAeT[0][i]) < 0.001 for i in range(3)]))
+    print('BSE code kTDA', 27.2114*(ekS), 27.2114*(ekT))
+    print('Pyscf code TkDA', 27.2114*(np.asarray(TDAeS[0])), 27.2114*(np.asarray(TDAeT[0])))
+    
+    for i in range(_nstates):
+        assert(abs(27.2114*(ekS[i] - TDAeS[0][i])) < 0.005)
+        print(str(i)+' singlet agrees to within 0.005 eV')    
+        assert(abs(27.2114*(ekT[i] - TDAeT[0][i])) < 0.005)
+        print(str(i)+' triplet agrees to within 0.005 eV')  
     
     print('TDA matches HF-based BSE without screening and with gw_e = mf.mo_energy \
           \n for singlets and triplets with kpt sampling!')
