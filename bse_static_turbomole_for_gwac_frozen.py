@@ -51,7 +51,6 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     #not sure.
     if bse.verbose >= logger.WARN:
         bse.check_sanity()
-    bse.dump_flags()
     
     if orbs is None:
         orbs = [x for x in range(bse.mf_nmo)]
@@ -315,6 +314,7 @@ class BSE(rhf.TDA):
     
     def kernel(self, nstates=None, orbs=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
+        self.dump_flags()
         self.conv, self.nstates, self.e, self.xy = kernel(self, nstates=nstates, orbs=orbs)
         logger.timer(self, 'BSE', *cput0)
         return self.conv, self.nstates, self.e, self.xy

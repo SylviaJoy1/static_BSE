@@ -49,7 +49,6 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
 #    assert(isinstance(bse.mf, dft.rks.RKS) or isinstance(bse.mf, dft.rks_symm.SymAdaptedRKS))
     
     log = logger.Logger(bse.stdout, bse.verbose)
-    bse.dump_flags()
 
     if orbs is None:
         orbs = [x for x in range(bse.mf_nmo)]
