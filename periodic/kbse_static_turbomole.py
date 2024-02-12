@@ -653,8 +653,3 @@ if __name__ == '__main__':
     
     print('TDA matches HF-based BSE without screening and with gw_e = mf.mo_energy \
           \n for singlets and triplets with kpt sampling!')
-    
-    #TODO:
-    #     k-point TDSCF solutions can have non-zero momentum transfer between particle and hole.
-    # This can be controlled by `td.kshift_lst`. By default, kshift_lst = [0] and only the
-    # zero-momentum transfer solution (i.e., 'vertical' in k-space) will be solved, 
