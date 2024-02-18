@@ -441,7 +441,7 @@ if __name__ == '__main__':
     from pyscf.pbc import gto as pbcgto
     from pyscf import gto
     from pyscf.pbc.tools import pyscf_ase, lattice
-    import bse
+    import bse_static_turbomole_for_gwac_frozen as bse
     
     ##########################################################
     # same as molecular BSE for large cell size with cell.dim = 0. 
@@ -530,7 +530,7 @@ if __name__ == '__main__':
     cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
     cell.a = ase_atom.cell
     cell.unit = 'B'
-    cell.basis = 'gth-szv'
+    cell.basis = 'gth-dzvp'
     cell.pseudo = 'gth-pade'
     cell.build()
     
@@ -548,19 +548,21 @@ if __name__ == '__main__':
     nocc = cell.nelectron//2
     nmo = np.shape(mymf.mo_energy)[-1]
     nvir = nmo-nocc
+    print('nocc, nvir', nocc, nvir)
     
     mygw = krgw_ac.KRGWAC(mymf)
     mygw.linearized = True
     mygw.ac = 'pade'
     # without finite size corrections
     mygw.fc = False
-    mygw.kernel()
+    mygw.kernel(orbs=range(nmo))
+    kgw_e = mygw.mo_energy
     
     bse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, ekS, xy = bse.kernel(nstates=3)
+    conv, excitations, ekS, xy = bse.kernel(nstates=4)
 
     bse.singlet=False
-    conv, excitations, ekT, xy = bse.kernel(nstates=3)
+    conv, excitations, ekT, xy = bse.kernel(nstates=4)
     
     #supercell
     from pyscf.pbc.tools.pbc import super_cell 
@@ -578,20 +580,25 @@ if __name__ == '__main__':
     nocc = cell.nelectron//2
     nmo = np.shape(mymf.mo_energy)[-1]
     nvir = nmo-nocc
+    print('nocc, nvir', nocc, nvir)
     
     mygw = krgw_ac.KRGWAC(mymf)
     mygw.linearized = True
     mygw.ac = 'pade'
     # without finite size corrections
     mygw.fc = False
-    mygw.kernel()
+    mygw.kernel(orbs=range(nmo))
+    gw_e = mygw.mo_energy
     
     bse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, eS, xy = bse.kernel(nstates=3)
+    conv, excitations, eS, xy = bse.kernel(nstates=4)
 
     bse.singlet=False
-    conv, excitations, eT, xy = bse.kernel(nstates=3)
+    conv, excitations, eT, xy = bse.kernel(nstates=4)
     
+    print('periodic GW', 27.2114*kgw_e, 'molecular GW', 27.2114*gw_e)
+    print(ekS*27.2114, eS*27.2114)
+    print(ekT*27.2114, eT*27.2114)
     assert(np.all([27.2114*(ekS[i] - eS[i]) < 0.01 for i in range(3)]))
     assert(np.all([27.2114*(ekT[i] - eT[i]) < 0.01 for i in range(3)]))
     

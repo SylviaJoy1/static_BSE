@@ -55,12 +55,12 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     if orbs is None:
         orbs = [x for x in range(bse.mf_nmo)]
     
-    orbs_nocc = sum([x < bse.mf_nocc for x in orbs])
-    if orbs_nocc > bse.gw_nocc:
-        orbs = [bse.mf_nocc - x for x in range(bse.gw_nocc, 0, -1)] + list(orbs)[orbs_nocc:]
-    orbs_vir = sum([x > bse.mf_nocc for x in orbs])
-    if orbs_vir > bse.gw_nmo - bse.gw_nocc:
-        orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
+    # orbs_nocc = sum([x < bse.mf_nocc for x in orbs])
+    # if orbs_nocc > bse.gw_nocc:
+    #     orbs = [bse.mf_nocc - x for x in range(bse.gw_nocc, 0, -1)] + list(orbs)[orbs_nocc:]
+    # orbs_vir = sum([x > bse.mf_nocc for x in orbs])
+    # if orbs_vir > bse.gw_nmo - bse.gw_nocc:
+    #     orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
    
     nmo = len(orbs)
     nocc = sum([x < bse.mf_nocc for x in orbs])
@@ -69,6 +69,10 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     if nmo > sum([x != 0 for x in bse.gw_e]):
         logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
         raise RuntimeError
+    
+    #this would not fix the problem if orbs is larger than gw orbs,
+    #but we caught the error with RuntimeError anyway.
+    orbs = [orb for orb in orbs if bse.gw_e[orbs.index(orb)] != 0]
     
     if nstates is None: nstates = len(orbs)
     
@@ -175,10 +179,9 @@ from types import SimpleNamespace
 
 from pyscf.ao2mo import _ao2mo
 def make_imds(gw, orbs):
-    mf_nocc = gw._scf.mol.nelectron//2
-    mo_coeff = np.array(gw._scf.mo_coeff)[:,orbs]
-    nocc = sum([x < mf_nocc for x in orbs])
-    nmo = len(orbs)
+    nocc = gw._scf.mol.nelectron//2
+    mo_coeff = np.array(gw._scf.mo_coeff)#[:,orbs]
+    nmo = np.shape(mo_coeff)[-1]
     nvir = nmo - nocc
   
     
@@ -201,16 +204,20 @@ def make_imds(gw, orbs):
         Lov[p0:p1] = Lpq[:,:nocc,nocc:]
         Lvv[p0:p1] = Lpq[:,nocc:,nocc:]
 
-    eris = SimpleNamespace()
-    eris.Loo = Loo
-    eris.Lov = Lov
-    eris.Lvv = Lvv
-
-    mo_energy = gw._scf.mo_energy[np.ix_(orbs)]
+    mo_energy = gw._scf.mo_energy#[np.ix_(orbs)]
     QP_diff = (mo_energy[:nocc, None]-mo_energy[None, nocc:]).T
-    i_mat = 4*einsum('Pia,Qia,ai->PQ', eris.Lov, eris.Lov, 1./QP_diff)
+    i_mat = 4*einsum('Pia,Qia,ai->PQ', Lov, Lov, 1./QP_diff)
     i_tilde = np.linalg.inv(np.eye(np.shape(i_mat)[0])-i_mat)
 #    R_tilde = make_R_tilde(bse.mf, eris)
+    
+
+    nocc = sum([x < nocc for x in orbs])
+    nmo = len(orbs)
+    nvir = nmo - nocc
+    eris = SimpleNamespace()
+    eris.Loo = Loo[:, -nocc:, -nocc:]
+    eris.Lov = Lov[:,-nocc:, :nvir]
+    eris.Lvv = Lvv[:,:nvir,:nvir]
     
     return eris, i_tilde
     
@@ -353,12 +360,7 @@ class BSE(rhf.TDA):
     #     if nstates is None: nstates = self.nstates
        
     #     if gw_e is None: gw_e = self.gw_e
-    #     print('self.mf_nocc:self.mf_nocc+nvir', self.mf_nocc,self.mf_nocc+nvir)
-    #     print('self.mf_nocc-nocc:self.mf_nocc', self.mf_nocc-nocc,self.mf_nocc)
-    #     print('GW occ', gw_e[self.mf_nocc-nocc:self.mf_nocc, None])
-    #     print('GW vir', gw_e[None,self.mf_nocc:self.mf_nocc+nvir])
     #     Ediff = gw_e[None,self.mf_nocc:self.mf_nocc+nvir] - gw_e[self.mf_nocc-nocc:self.mf_nocc, None]
-    #     print('np.shape(Ediff)', np.shape(Ediff))
     #     e_ia = np.hstack([x.ravel() for x in Ediff])
     #     e_ia_max = e_ia.max()
     #     nov = e_ia.size
@@ -438,14 +440,12 @@ if __name__ == '__main__':
      nmo = mf.mo_energy.size
      nvir = nmo-nocc
 
-     mygw = gw.GW(mf, frozen=0, freq_int='ac')
+     mygw = gw.GW(mf, freq_int='ac')
      mygw.kernel(orbs=range(nmo))
      gw_e = mygw.mo_energy
      print('gw_e', gw_e)
 
-     #Technically, should be TDA=False to compare with lit values,
-     #but the final two singlet exc. converged to something weird (weird symm too),
-     #so I had to set TDA=True.
+     #Technically, should be TDA=False to compare with lit values
      bse = BSE(mygw, TDA=True, singlet=True)
      bse.verbose = 9
      conv, excitations, e, xy = bse.kernel(nstates=4, orbs=range(nmo))
@@ -464,3 +464,4 @@ if __name__ == '__main__':
      assert(abs(27.2114*bse.e[2] - 9.79518) < 5*1e-2)
      # bse.analyze()
      print('BSE triplet matches lit')
+     print('nocc, nvir', nocc, nvir)
