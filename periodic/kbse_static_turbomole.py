@@ -395,11 +395,11 @@ class BSE(krhf.TDA):
         for i in range(nocc):
             for a in range(nvir):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
-                diag[:,i,a] -= einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
+                diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
                 #WARNING: Change back! TDA
                 # diag[kn,i,a] -= einsum('P, P->', Loo[kn,:,i,i].conj(), Lvv[kn,:,a,a])
                 if self.singlet:
-                    diag[:,i,a] += 2*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
+                    diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
         if self.TDA:
             return diag
