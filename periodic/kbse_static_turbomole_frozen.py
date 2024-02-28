@@ -34,10 +34,10 @@ from pyscf import __config__
 from pyscf.pbc.lib.kpts_helper import gamma_point
 einsum = lib.einsum
     
-REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
+REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 # Low excitation filter to avoid numerical instability
 POSTIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
-# MO_BASE = getattr(__config__, 'MO_BASE', 1)
+MO_BASE = getattr(__config__, 'MO_BASE', 1)
 
 def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     '''static screening BSE excitation energies
@@ -94,7 +94,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     nroots = nstates
 
     def precond(r, e0, x0):
-        return r/(e0-diag+1e-8)
+        return r/(e0-diag+1e-12)
 
     if bse.TDA:
         eig = lib.davidson1
@@ -102,8 +102,8 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
         eig = lib.davidson_nosym1
     
     # GHF or customized RHF/UHF may be of complex type
-    real_system = (gamma_point(bse._scf.kpts) and
-                       bse._scf.mo_coeff[0].dtype == np.double)
+    real_system = (bse._scf.mo_coeff[0].dtype == np.double) #gamma_point(bse._scf.kpts) and
+                       
     
     def pickeig(w, v, nroots, envs):
         real_idx = np.where((abs(w.imag) < REAL_EIG_THRESHOLD) &
