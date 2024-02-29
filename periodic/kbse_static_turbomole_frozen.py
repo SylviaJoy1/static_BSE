@@ -344,7 +344,7 @@ class BSE(krhf.TDA):
         return self
     
     def kernel(self, nstates=None, orbs=None):
-        nmo = self.nmo
+        nmo = self.mf_nmo
         naux = self.with_df.get_naoaux()
         nkpts = self.nkpts
         mem_incore = (2*nkpts**2*nmo**2*naux) * 16/1e6
