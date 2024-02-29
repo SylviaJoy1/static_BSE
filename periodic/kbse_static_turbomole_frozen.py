@@ -63,17 +63,15 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     # orbs_vir = sum([x > bse.mf_nocc for x in orbs])
     # if orbs_vir > bse.gw_nmo - bse.gw_nocc:
     #     orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
-    
-    nocc = sum([x < bse.mf_nocc for x in orbs])
-    nmo = len(orbs)
 
-    if nmo > sum([x != 0 for x in bse.gw_e[0]]):
+    if len(orbs) > sum([x != 0 for x in bse.gw_e[0]]):
         logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
         raise RuntimeError
 
-    #this would not fix the problem if orbs is larger than gw orbs,
-    #but we caught the error with RuntimeError anyway.
-    orbs = [orb for orb in orbs if bse.gw_e[0][orbs.index(orb)] != 0]
+    orbs = [orb for orb in orbs if bse.gw_e[0][orb] != 0]
+    
+    nocc = sum([x < bse.mf_nocc for x in orbs])
+    nmo = len(orbs)
     
     nkpts = bse.nkpts
     # kpts = bse.kpts
@@ -136,7 +134,7 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     
     gw_e = bse.gw_e 
     #WARNING: Change back! TDA
-    # gw_e = np.asarray(bse.gw._scf.mo_energy)
+    gw_e = np.asarray(bse.gw._scf.mo_energy)
     
     gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
@@ -157,9 +155,9 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
             # Find km that conserves with kn and kL (-km+kn+kL=G)
             km = all_kidx_r[kL][kn]
             # WARNING: Change back! TDA
-            # Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
-            Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
-                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
+            Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
+            # Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
+                                            # qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
     if bse.singlet:
         #kL is (0,0,0) 
         #should be already shifted back to 0 if shifted kmesh
@@ -199,7 +197,7 @@ def make_imds(gw, orbs):
     #TODO: not sure
     mo_energy = np.array(gw._scf.mo_energy)#[:,orbs] #mf mo_energy
     mo_coeff = np.array(gw._scf.mo_coeff)#[:,:,orbs]
-    nmo = len(orbs)
+    # nmo = len(orbs)
     nao = np.shape(gw._scf.mo_coeff)[-1]
     nkpts = gw.nkpts
     kpts = gw.kpts
@@ -346,7 +344,7 @@ class BSE(krhf.TDA):
         return self
     
     def kernel(self, nstates=None, orbs=None):
-        nmo = self.gw_nmo
+        nmo = self.nmo
         naux = self.with_df.get_naoaux()
         nkpts = self.nkpts
         mem_incore = (2*nkpts**2*nmo**2*naux) * 16/1e6
@@ -391,9 +389,9 @@ class BSE(krhf.TDA):
         nvir = nmo - nocc
         nkpts = self.nkpts
         
-        gw_e = self.gw_e
+        # gw_e = self.gw_e
         #WARNING: Change back! TDA
-        # gw_e = np.asarray(self.mo_energy)
+        gw_e = np.asarray(self.mo_energy)
         gw_e_occ = gw_e[:,self.mf_nocc-nocc:self.mf_nocc]
         gw_e_vir = gw_e[:,self.mf_nocc:self.mf_nocc+nvir]
         
@@ -406,9 +404,9 @@ class BSE(krhf.TDA):
         for i in range(nocc):
             for a in range(nvir):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
-                diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
+                # diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
                 #WARNING: Change back! TDA
-                # diag[:,i,a] -= einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
+                diag[:,i,a] -= einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
