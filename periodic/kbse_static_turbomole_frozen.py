@@ -134,7 +134,7 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     
     gw_e = bse.gw_e 
     #WARNING: Change back! TDA
-    gw_e = np.asarray(bse.gw._scf.mo_energy)
+    #gw_e = np.asarray(bse.gw._scf.mo_energy)
     
     gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
@@ -155,9 +155,9 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
             # Find km that conserves with kn and kL (-km+kn+kL=G)
             km = all_kidx_r[kL][kn]
             # WARNING: Change back! TDA
-            Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
-            # Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
-                                            # qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
+            #Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
+            Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
+                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
     if bse.singlet:
         #kL is (0,0,0) 
         #should be already shifted back to 0 if shifted kmesh
@@ -389,9 +389,9 @@ class BSE(krhf.TDA):
         nvir = nmo - nocc
         nkpts = self.nkpts
         
-        # gw_e = self.gw_e
+        gw_e = self.gw_e
         #WARNING: Change back! TDA
-        gw_e = np.asarray(self.mo_energy)
+        #gw_e = np.asarray(self.mo_energy)
         gw_e_occ = gw_e[:,self.mf_nocc-nocc:self.mf_nocc]
         gw_e_vir = gw_e[:,self.mf_nocc:self.mf_nocc+nvir]
         
@@ -404,9 +404,9 @@ class BSE(krhf.TDA):
         for i in range(nocc):
             for a in range(nvir):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
-                # diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
+                diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
                 #WARNING: Change back! TDA
-                diag[:,i,a] -= einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
+                #diag[:,i,a] -= einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
