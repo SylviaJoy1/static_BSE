@@ -106,6 +106,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
                        tol=bse.conv_tol, max_cycle=bse.max_cycle,
                        max_space=bse.max_space, nroots=nroots, verbose=log)
     xy =   [(xi[:nocc*nvir].reshape(nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
+    # xy =   [xi[:nocc*nvir].reshape(nocc, nvir)*np.sqrt(.5) for xi in xy]
         
     if bse.verbose >= logger.INFO:
         np.set_printoptions(threshold=nocc*nvir)
