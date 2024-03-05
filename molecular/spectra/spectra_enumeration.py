@@ -19,19 +19,10 @@ spectral_width=0.1
 def gaussian(x, mu, sig):
     return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
 
-def run_spectral_analysis(mol, xc="lda"):
+def JamesSmithSpectra(mytd, mybse):
 
-    # Ground State DFT
-    mf = dft.RKS(mol, xc=xc).run()
-
-    # Excited State DFT
-    mytd = tddft.TDDFT(mf)
-    mytd.nstates = n_states
-    mytd.max_space = 100
-    mytd.max_cycle = 200
-    mytd.kernel();
-    mytd.analyze()
-    osc_strengths = mytd.oscillator_strength()[:n_states-5]
+    mytd.kernel()
+    osc_strengths = mytd.oscillator_strength(gauge='velocity')[:n_states-5]
   
     # Convolve lineshapes to make spectra
     energies_ev = mytd.e[:n_states-5]*ha_2_ev
@@ -46,16 +37,8 @@ def run_spectral_analysis(mol, xc="lda"):
     area = (intensity_tddft*dx).sum()
     intensity_tddft /= area
   
-    # BSE
-    mygw = gw.GW(mf, freq_int='ac')
-    mygw.kernel()
-    formula = 'oxazole'
-    mf.with_df = df.DF(mol)
-    mf.with_df._cderi_to_save = formula+'.h5'
-    mybse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, e, xy = mybse.kernel(nstates=n_states)
-    mybse.analyze()
-    osc_strengths = mybse.oscillator_strength()[:n_states-5]
+    conv, excitations, es, xys = mybse.kernel(nstates=n_states)
+    osc_strengths = mybse.oscillator_strength(gauge='velocity')[:n_states-5]
 
     # Convolve lineshapes to make spectra
     energies_ev = mybse.e[:n_states-5]*ha_2_ev
@@ -65,12 +48,18 @@ def run_spectral_analysis(mol, xc="lda"):
     for e, f in zip(energies_ev, osc_strengths):
         intensity_bse += gaussian(x_range_bse, e, spectral_width) * f
 
+    
     # Rough Normalization
     dx = (x_range_bse[-1] - x_range_bse[0])/x_range_bse.size
     area = (intensity_bse*dx).sum()
     intensity_bse /= area
    
     return x_range_tddft, x_range_bse, intensity_tddft, intensity_bse
+
+def _charge_center(mol):
+    charges = mol.atom_charges()
+    coords  = mol.atom_coords()
+    return np.einsum('z,zr->r', charges, coords)/charges.sum()
 
 from functools import reduce
 def get_dipole_mo(bse, pblock="occ", qblock="vir"):
@@ -92,9 +81,11 @@ def get_dipole_mo(bse, pblock="occ", qblock="vir"):
 
     # int1e_ipovlp gives overlap gradients, i.e. d/dr
     # To get momentum operator, use (-i) * int1e_ipovlp
-    ip_ao = scf.mol.intor('cint1e_ipovlp_sph', comp=3)
-    ip_ao = np.asarray(ip_ao, dtype=dtype).transpose(0,1,2)  # with shape (naxis, nmo, nmo)
-    ip_ao *= -1j
+    with mol.with_common_orig(_charge_center(mol)):
+        # ip_ao = scf.mol.intor_symmetric('int1e_r', comp=3) #xyz components
+        ip_ao = scf.mol.intor('int1e_ipovlp_sph', comp=3) #doesnt give right answer
+    ip_ao = np.asarray(ip_ao, dtype=dtype)#.transpose(0,1,2)  # with shape (naxis, nmo, nmo)
+    ip_ao *= -1j #to get rid of the i prefactor in the integral
 
     mo_coeff = scf.mo_coeff
     # mo_energy = scf.mo_energy
@@ -139,31 +130,14 @@ def get_dipole_mo(bse, pblock="occ", qblock="vir"):
 
         # switch to pure momentum operator (is it the velocity gauge in dipole approximation?)
         dipole[x] = ip_mo[x]
-
+    
     return dipole
 
-def optical_absorption_singlet(mol, nexc=n_states, xc="lda"):
-    """Compute full CCSD spectra.
-
-    Args:
-        eom ([type]): [description]
-        scan ([type]): [description]
-        eta ([type]): [description]
-        tol ([type], optional): [description]. Defaults to 1e-5.
-        maxiter (int, optional): [description]. Defaults to 500.
-        imds ([type], optional): [description]. Defaults to None.
-    """
-    mf = dft.RKS(mol, xc=xc).run()
-    mygw = gw.GW(mf, freq_int='ac')
-    mygw.kernel()
-    formula = 'oxazole'
-    mf.with_df = df.DF(mol)
-    mf.with_df._cderi_to_save = formula+'.h5'
-    mybse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, es, xys = mybse.kernel(nstates=n_states)
+def XiaoStyleSpectra(mybse, nexc=n_states):
+    conv, excitations, es, xys = mybse.kernel(nstates=nexc)
     energies_ev = es[:n_states-5]*ha_2_ev
     
-    #xkia dipole matrix elements in MO basis
+    #xia dipole matrix elements in MO basis
     dipole = get_dipole_mo(mybse)
 
     # Convolve lineshapes to make spectra
@@ -175,7 +149,7 @@ def optical_absorption_singlet(mol, nexc=n_states, xc="lda"):
             f = abs(np.sum(dipole[x]*xy[0]))**2 #0 to take just TDA part
             intensity_bse[x,:] += gaussian(x_range_bse, e, spectral_width) * f
 
-    intensity_bse = np.sum(intensity_bse, axis=0)/x_range_bse**2
+    intensity_bse = (2/3)*np.sum(intensity_bse, axis=0)/x_range_bse#/x_range_bse**2
 
     # # Rough Normalization
     dx = (x_range_bse[-1] - x_range_bse[0])/x_range_bse.size
@@ -198,15 +172,39 @@ if __name__ == '__main__':
    H     -1.2289     -1.9326     -0.1322
    O     -0.0873      1.1351      0.1422
    N     -1.1414      0.1776      0.1122""",
-   verbose=9)
+   verbose=9, basis = 'gth-dzvp')
      
-     xc = 'LDA'
-     x_range_tddft, x_range_bse, intensity_tddft, intensity_bse = run_spectral_analysis(mol, xc=xc)
-     x_range_bse, intensity_bse = optical_absorption_singlet(mol)
+     xc = 'PBE'
+     
+     # Ground State DFT
+     mf = dft.RKS(mol, xc=xc).run()
+
+     # Excited State DFT
+     mytd = tddft.TDDFT(mf)
+     mytd.nstates = n_states
+     mytd.max_space = 100
+     mytd.max_cycle = 200
+     
+     # BSE
+     mygw = gw.GW(mf, freq_int='ac')
+     mygw.kernel()
+     print('gw mo energies', mygw.mo_energy)
+     formula = 'oxazole'
+     mf.with_df = df.DF(mol)
+     mf.with_df._cderi_to_save = formula+'.h5'
+     mybse = BSE(mygw, TDA=True, singlet=True)
+    
+     
+     x_range_tddft, x_range_bse, intensity_tddft, intensity_bse = JamesSmithSpectra(mytd, mybse)
+     # x_range_bse, intensity_bse = XiaoStyleSpectra(mybse)
      
      import matplotlib.pyplot as plt
      ax = plt.figure(figsize=(5, 6), dpi=100).add_subplot()
-     ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc)
-     ax.plot(x_range_bse, intensity_bse, label='BSE@'+xc)
+     ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc, color='blue')
+     ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='red')
+     plt.ylim([0,1.7])
+     plt.xlim([0,11])
+     plt.xlabel("Energy (eV)")
+     plt.ylabel("Intensity")
      plt.legend(loc='best')
-     plt.savefig('mol_enumerated_spectrum_correct_norm.png')
+     plt.savefig('mol_enumerated_spectrum_JETS_vel_gauge.png')

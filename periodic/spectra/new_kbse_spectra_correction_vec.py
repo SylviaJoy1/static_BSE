@@ -26,25 +26,13 @@ def get_dipole_mo(eom, pblock="occ", qblock="vir"):
     """
     # TODO figure out why 'cint1e_ipovlp_cart' causes shape mismatch for `ip_ao` and `mo_coeff` when basis='gth-dzvp'.
     # Meanwhile, let's use 'cint1e_ipovlp_sph' or 'int1e_ipovlp' because they seems to be fine.
-    if hasattr(eom, 'kpts'):
-        kpts = eom.kpts
-    else:
-        kpts = eom._scf.cell.kpts#[[0,0,0]] #trying to include tddft
+    kpts = eom.kpts
     nkpts = len(kpts)
-    if hasattr(eom, 'mf_nocc'):
-        nocc = eom.mf_nocc
-    else:
-        nocc = eom._scf.mol.nelectron//2
-    if hasattr(eom, 'mf_nmo'):
-        nmo = eom.mf_nmo
-    else:
-        nmo = np.shape(np.array(eom._scf.mo_coeff))[-1]
+    nocc = eom.mf_nocc
+    nmo = eom.mf_nmo
     dtype = 'complex128'
-    if hasattr(eom, 'gw'):
-        scf = eom.gw._scf
-    else:
-        scf = eom._scf
-    
+    scf = eom.gw._scf
+
     # int1e_ipovlp gives overlap gradients, i.e. d/dr
     # To get momentum operator, use (-i) * int1e_ipovlp
     ip_ao = scf.cell.pbc_intor('cint1e_ipovlp_sph', kpts=kpts, comp=3)
@@ -105,6 +93,84 @@ spectral_width=0.1
 def gaussian(x, mu, sig):
     return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
 
+import scipy
+def optical_absorption_singlet(eom, scan, eta, kshift=0, tol=1e-5, maxiter=500):
+    """Compute BSE spectra.
+
+    Args:
+        eom ([type]): [description]
+        scan ([type]): [description]
+        eta ([type]): [description]
+        kshift (int, optional): [description]. Defaults to 0.
+        tol ([type], optional): [description]. Defaults to 1e-5.
+        maxiter (int, optional): [description]. Defaults to 500.
+    """
+    
+    #OK
+    ieta = 1j*eta
+    omega_list = scan
+    spectrum = np.zeros((3, len(omega_list)), dtype=np.complex)
+    
+    from pyscf.pbc.ci import kcis_rhf
+    counter = kcis_rhf.gmres_counter(rel=True)
+    LinearSolver = scipy.sparse.linalg.gcrotmk
+    
+    
+    
+    
+    dipole = get_dipole_mo(eom, "all", "all")
+
+    # b = <\Phi_{\alpha} | \bar{\dipole} | \Phi_0>
+    # b is needed to solve a.x=b linear equations
+    b0, b_vector = get_effective_dipole_left(eom, dipole, kshift)
+    b_size = b_vector.shape[1]
+    # check the \phi_0 component of b vector
+    print(f"b0 = {b0}")
+    if any(abs(b0) > 1e-6):
+        logger.warn(eom, 'Large b0 detected! b0 (x,y,z) = {}). Consider adding b0.conj() * x0 contribution \
+                    to spectra'.format(b0))
+
+    # e = <\Phi_0 | (1+\Lambda) \bar{\dipole^{\dagger}} | \Phi_{\alpha}>
+    e0, e_vector = get_effective_dipole_right(eom, dipole, kshift, ov_oovv=b_vector)
+
+    # solve linear equations A.x = b
+    diag = eom.get_diag(kshift, imds)
+    if x0 is None:
+        x0 = np.zeros((3, b_size), dtype=b_vector.dtype)
+
+    for i, omega in enumerate(omega_list):
+        matvec = lambda vec: eeccsd_matvec_singlet(eom, vec, kshift, imds=imds) * (-1.) + (omega + ieta) * vec
+        A = scipy.sparse.linalg.LinearOperator((b_size, b_size), matvec=matvec, dtype=diag.dtype)
+
+        # preconditioner
+        # M is the inverse of P, where P should be close to A, but easy to solve.
+        # We choose P = H_diags shifted by omega + ieta.
+        M = scipy.sparse.diags(np.reciprocal(diag * (-1.) + omega + ieta), format='csc', dtype=diag.dtype)
+
+        for x in range(3):
+
+            sol, info = LinearSolver(A, b_vector[x], x0=x0[x], tol=tol, maxiter=maxiter, M=M, callback=counter,
+                                     **kwargs)
+            if info == 0:
+                print('Frequency', np.round(omega,3), 'converged in', counter.niter, 'iterations')
+            else:
+                print('Frequency', np.round(omega,3), 'not converged after', counter.niter, 'iterations')
+            counter.reset()
+
+            x0[x] = sol
+            spectrum[x,i] = np.dot(e_vector[x], sol)
+
+            sol0 = b0[x] + np.dot(sol, amplitudes_to_vector_singlet(imds.Fov, imds.woOvV, kconserv2))
+            sol0 /= omega + ieta
+            spec0 = e0[x] * sol0
+            
+            #OK
+            logger.debug(eom, 'b0.conj * x0 contribution to spectrum = %.15g', spec0)
+
+            spectrum[x, i] += spec0
+
+    return -1./np.pi*spectrum.imag, x0
+
 def XiaoStyleSpectra(mybse, nexc=n_states):
     """Compute full CCSD spectra.
 
@@ -118,12 +184,7 @@ def XiaoStyleSpectra(mybse, nexc=n_states):
         imds ([type], optional): [description]. Defaults to None.
     """
 
-    # conv, excitations, es, xys = mybse.kernel(nstates=nexc)
-    
-    #for TDDFT only
-    es, xys = mybse.kernel()
-    es = es[0]
-    
+    conv, excitations, es, xys = mybse.kernel(nstates=nexc)
     energies_ev = np.asarray(es)[:nexc-5]*ha_2_ev
     
     #xkia dipole matrix elements in MO basis
@@ -200,26 +261,23 @@ if __name__ == '__main__':
     mymf.max_memory=10000
     mymf.kernel()
     
-    # from pyscf.pbc.gw import krgw_ac
-    # mygw = krgw_ac.KRGWAC(mymf)
-    # mygw.linearized = True
-    # mygw.ac = 'pade'
-    # # without finite size corrections
-    # mygw.fc = False
-    # mygw.kernel()
-    # print('gw mo energies', mygw.mo_energy)
-    # mybse = BSE(mygw, TDA=True, singlet=True)
+    from pyscf.pbc.gw import krgw_ac
+    mygw = krgw_ac.KRGWAC(mymf)
+    mygw.linearized = True
+    mygw.ac = 'pade'
+    # without finite size corrections
+    mygw.fc = False
+    mygw.kernel()
+    print('gw mo energies', mygw.mo_energy)
+    mybse = BSE(mygw, TDA=True, singlet=True)
     
-    # from pyscf.pbc import tdscf
-    mybse = mymf.TDDFT()
-    mybse.nstates = n_states
     
     x_range_bse, intensity_bse = XiaoStyleSpectra(mybse)
     import matplotlib.pyplot as plt
     ax = plt.figure(figsize=(5, 6), dpi=100).add_subplot()
     # ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc)
-    ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='blue')
+    ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='red')
     plt.ylim([0,1.7])
     plt.xlim([0,11])
     plt.legend(loc='best')
-    plt.savefig('periodic_enumerated_spectrum_tddft.png')
+    plt.savefig('periodic_enumerated_spectrum.png')
