@@ -13,7 +13,7 @@ import numpy as np
 from scipy.constants import physical_constants
 
 ha_2_ev = 1/physical_constants["electron volt-hartree relationship"][0]
-n_states=15
+n_states=20
 spectral_width=0.1
 
 def gaussian(x, mu, sig):
@@ -28,6 +28,8 @@ def JamesSmithSpectra(mytd, mybse):
     energies_ev = mytd.e[:n_states-5]*ha_2_ev
     x_range_tddft = np.linspace(energies_ev.min()*0.9, energies_ev.max()*1.1, num=1000)
     intensity_tddft = np.zeros(x_range_tddft.size)
+
+    print('energies_ev', energies_ev)
 
     for e, f in zip(energies_ev, osc_strengths):
         intensity_tddft += gaussian(x_range_tddft, e, spectral_width) * f
@@ -201,10 +203,10 @@ if __name__ == '__main__':
      import matplotlib.pyplot as plt
      ax = plt.figure(figsize=(5, 6), dpi=100).add_subplot()
      ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc, color='blue')
-     ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='red')
+     # ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='red')
      plt.ylim([0,1.7])
-     plt.xlim([0,11])
+     plt.xlim([0,8])
      plt.xlabel("Energy (eV)")
      plt.ylabel("Intensity")
      plt.legend(loc='best')
-     plt.savefig('mol_enumerated_spectrum_JETS_vel_gauge.png')
+     plt.savefig('mol_enumerated_spectrum_JETS_velocity_gauge_TDDFT.png')

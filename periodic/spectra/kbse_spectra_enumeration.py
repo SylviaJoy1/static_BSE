@@ -29,7 +29,7 @@ def get_dipole_mo(eom, pblock="occ", qblock="vir"):
     if hasattr(eom, 'kpts'):
         kpts = eom.kpts
     else:
-        kpts = eom._scf.cell.kpts#[[0,0,0]] #trying to include tddft
+        kpts = [[0,0,0]] #trying to include tddft
     nkpts = len(kpts)
     if hasattr(eom, 'mf_nocc'):
         nocc = eom.mf_nocc
@@ -99,7 +99,7 @@ def get_dipole_mo(eom, pblock="occ", qblock="vir"):
 
 from scipy.constants import physical_constants
 ha_2_ev = 1/physical_constants["electron volt-hartree relationship"][0]
-n_states=15
+n_states=20
 spectral_width=0.1
 
 def gaussian(x, mu, sig):
@@ -174,7 +174,7 @@ if __name__ == '__main__':
     cell = gto.Cell()
     cell.build(
             a = np.eye(3),
-           mesh = [50]*3,
+            # mesh = [20]*3,
             atom = """  C      1.0701      0.4341     -0.0336
           C      0.8115     -0.9049     -0.1725
           C     -0.6249     -1.0279     -0.0726
@@ -184,7 +184,8 @@ if __name__ == '__main__':
           O     -0.0873      1.1351      0.1422
           N     -1.1414      0.1776      0.1122""",
             dimension = 0,
-            basis = 'gth-dzvp')
+            basis = 'gth-dzvp',
+            verbose=9)
     
     kdensity = 1
     kmesh = [kdensity, kdensity, kdensity]
@@ -214,12 +215,15 @@ if __name__ == '__main__':
     mybse = mymf.TDDFT()
     mybse.nstates = n_states
     
-    x_range_bse, intensity_bse = XiaoStyleSpectra(mybse)
+    # x_range_bse, intensity_bse = XiaoStyleSpectra(mybse)
+    x_range_tddft, intensity_tddft = XiaoStyleSpectra(mybse)
     import matplotlib.pyplot as plt
     ax = plt.figure(figsize=(5, 6), dpi=100).add_subplot()
-    # ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc)
-    ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='blue')
+    ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc)
+    # ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='red')
     plt.ylim([0,1.7])
-    plt.xlim([0,11])
+    plt.xlim([0,8])
+    plt.xlabel("Energy (eV)")
+    plt.ylabel("Intensity")
     plt.legend(loc='best')
     plt.savefig('periodic_enumerated_spectrum_tddft.png')
