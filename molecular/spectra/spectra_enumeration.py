@@ -12,17 +12,23 @@ sys.path.append('/Users/sylviabintrim/Desktop/Desktop - Sylvia’s MacBook Pro/B
 import numpy as np
 from scipy.constants import physical_constants
 
+au2ev = 27.2114
 ha_2_ev = 1/physical_constants["electron volt-hartree relationship"][0]
-n_states=20
-spectral_width=0.1
+n_states=100
+spectral_width=0.3
+FWHM = 0.2#5.0/au2ev #0.2/27.21139
 
-def gaussian(x, mu, sig):
+def gaussian(x, mu, sig=FWHM):
     return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
 
-def JamesSmithSpectra(mytd, mybse):
+def lorentzian(x, mean, fwhm=FWHM):
+    eta = fwhm/2
+    return 1.0/np.pi * eta / ((x-mean)**2 + eta**2)
+
+def JamesSmithSpectra(mytd, mybse, gauge='length'):
 
     mytd.kernel()
-    osc_strengths = mytd.oscillator_strength(gauge='velocity')[:n_states-5]
+    osc_strengths = mytd.oscillator_strength(gauge=gauge)[:n_states-5]
   
     # Convolve lineshapes to make spectra
     energies_ev = mytd.e[:n_states-5]*ha_2_ev
@@ -32,15 +38,15 @@ def JamesSmithSpectra(mytd, mybse):
     print('energies_ev', energies_ev)
 
     for e, f in zip(energies_ev, osc_strengths):
-        intensity_tddft += gaussian(x_range_tddft, e, spectral_width) * f
+        intensity_tddft +=  gaussian(x_range_tddft, e) * f #lorentzian(x_range_tddft, e) * f
 
     # Rough Normalization
-    dx = (x_range_tddft[-1] - x_range_tddft[0])/x_range_tddft.size
-    area = (intensity_tddft*dx).sum()
-    intensity_tddft /= area
+    # dx = (x_range_tddft[-1] - x_range_tddft[0])/x_range_tddft.size
+    # area = (intensity_tddft*dx).sum()
+    # intensity_tddft /= area
   
     conv, excitations, es, xys = mybse.kernel(nstates=n_states)
-    osc_strengths = mybse.oscillator_strength(gauge='velocity')[:n_states-5]
+    osc_strengths = mybse.oscillator_strength(gauge=gauge)[:n_states-5]
 
     # Convolve lineshapes to make spectra
     energies_ev = mybse.e[:n_states-5]*ha_2_ev
@@ -48,13 +54,13 @@ def JamesSmithSpectra(mytd, mybse):
     intensity_bse = np.zeros(x_range_bse.size)
 
     for e, f in zip(energies_ev, osc_strengths):
-        intensity_bse += gaussian(x_range_bse, e, spectral_width) * f
+        intensity_bse += gaussian(x_range_bse, e) * f #lorentzian(x_range_bse, e) * f
 
     
     # Rough Normalization
-    dx = (x_range_bse[-1] - x_range_bse[0])/x_range_bse.size
-    area = (intensity_bse*dx).sum()
-    intensity_bse /= area
+    # dx = (x_range_bse[-1] - x_range_bse[0])/x_range_bse.size
+    # area = (intensity_bse*dx).sum()
+    # intensity_bse /= area
    
     return x_range_tddft, x_range_bse, intensity_tddft, intensity_bse
 
@@ -149,7 +155,7 @@ def XiaoStyleSpectra(mybse, nexc=n_states):
     for x in range(3):
         for e, xy in zip(energies_ev , xys[:n_states-5]):
             f = abs(np.sum(dipole[x]*xy[0]))**2 #0 to take just TDA part
-            intensity_bse[x,:] += gaussian(x_range_bse, e, spectral_width) * f
+            intensity_bse[x,:] += lorentzian(x_range_bse, e) * f#gaussian(x_range_bse, e, spectral_width) * f
 
     intensity_bse = (2/3)*np.sum(intensity_bse, axis=0)/x_range_bse#/x_range_bse**2
 
@@ -166,20 +172,38 @@ if __name__ == '__main__':
      from pyscf import gto, dft, gw, tddft, df
      from bse_static_turbomole_for_gwac_frozen import BSE
     
-     mol = gto.M(atom="""  C      1.0701      0.4341     -0.0336
-   C      0.8115     -0.9049     -0.1725
-   C     -0.6249     -1.0279     -0.0726
-   H      1.9842      1.0231     -0.0364
-   H      1.5156     -1.7176     -0.3255
-   H     -1.2289     -1.9326     -0.1322
-   O     -0.0873      1.1351      0.1422
-   N     -1.1414      0.1776      0.1122""",
-   verbose=9, basis = 'gth-dzvp')
+   #   mol = gto.M(atom="""  C      1.0701      0.4341     -0.0336
+   # C      0.8115     -0.9049     -0.1725
+   # C     -0.6249     -1.0279     -0.0726
+   # H      1.9842      1.0231     -0.0364
+   # H      1.5156     -1.7176     -0.3255
+   # H     -1.2289     -1.9326     -0.1322
+   # O     -0.0873      1.1351      0.1422
+   # N     -1.1414      0.1776      0.1122""",
+   # verbose=9, basis = 'gth-dzvp')
      
      xc = 'PBE'
      
-     # Ground State DFT
-     mf = dft.RKS(mol, xc=xc).run()
+   #   # Ground State DFT
+   #   mf = dft.RKS(mol, xc=xc).run()
+   
+     mol = gto.Mole()
+     mol.build(
+         atom = """  C      1.0701      0.4341     -0.0336
+         C      0.8115     -0.9049     -0.1725
+          C     -0.6249     -1.0279     -0.0726
+          H      1.9842      1.0231     -0.0364
+          H      1.5156     -1.7176     -0.3255
+          H     -1.2289     -1.9326     -0.1322
+          O     -0.0873      1.1351      0.1422
+          N     -1.1414      0.1776      0.1122""",
+         basis = 'gth-dzvp',
+          symmetry = True,
+     )
+     
+     mf = dft.RKS(mol)
+     mf.xc = xc
+     mf.kernel()
 
      # Excited State DFT
      mytd = tddft.TDDFT(mf)
@@ -191,22 +215,24 @@ if __name__ == '__main__':
      mygw = gw.GW(mf, freq_int='ac')
      mygw.kernel()
      print('gw mo energies', mygw.mo_energy)
-     formula = 'oxazole'
+     formula = 'oxa'
      mf.with_df = df.DF(mol)
      mf.with_df._cderi_to_save = formula+'.h5'
      mybse = BSE(mygw, TDA=True, singlet=True)
     
      
-     x_range_tddft, x_range_bse, intensity_tddft, intensity_bse = JamesSmithSpectra(mytd, mybse)
+     l_x_range_tddft, l_x_range_bse, l_intensity_tddft, l_intensity_bse = JamesSmithSpectra(mytd, mybse)
+     v_x_range_tddft, v_x_range_bse, v_intensity_tddft, v_intensity_bse = JamesSmithSpectra(mytd, mybse, gauge='velocity')
      # x_range_bse, intensity_bse = XiaoStyleSpectra(mybse)
      
      import matplotlib.pyplot as plt
      ax = plt.figure(figsize=(5, 6), dpi=100).add_subplot()
-     ax.plot(x_range_tddft, intensity_tddft, label='TDDFT@'+xc, color='blue')
+     ax.plot(l_x_range_tddft, l_intensity_tddft, label='length gauge, TDDFT@'+xc, color='blue')
+     ax.plot(v_x_range_tddft, v_intensity_tddft, label='velocity gauge, TDDFT@'+xc, color='black', linestyle='--')
      # ax.plot(x_range_bse, intensity_bse, label='BSE@GW@'+xc, color='red')
-     plt.ylim([0,1.7])
-     plt.xlim([0,8])
+     # plt.ylim([0,1.5])
+     plt.xlim([0,12])
      plt.xlabel("Energy (eV)")
      plt.ylabel("Intensity")
      plt.legend(loc='best')
-     plt.savefig('mol_enumerated_spectrum_JETS_velocity_gauge_TDDFT.png')
+     plt.savefig('oxazole_enumerated_spectrum_JETS_gauges.png')

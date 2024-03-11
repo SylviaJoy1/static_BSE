@@ -110,6 +110,9 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     conv, e, xy = eig(matvec, guess, precond, pick=pickeig,
                        tol=bse.conv_tol, max_cycle=bse.max_cycle,
                        max_space=bse.max_space, nroots=nroots, verbose=log)
+    #TODO: not exactly compatible with PySCF TDA xy format,
+    #since the latter has kshifts
+    #so PySCF basically has an extra xy index for kshift that I don't have
     xy =   [(xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
     # xy =   [xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5) for xi in xy]
         
@@ -119,6 +122,8 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
         for n, en, vn, convn in zip(range(nroots), e, xy, conv):
             logger.info(bse, '  BSE root %d E = %.16g eV  conv = %s',
                         n, en*27.2114, convn)
+    #TODO: bse.e is also not compatible with PySCF TDA e format,
+    #since the latter has kshifts
     return conv, nstates, e, xy
     
 def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
@@ -134,12 +139,11 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     
     gw_e = bse.gw_e 
     #WARNING: Change back! TDA
-    #gw_e = np.asarray(bse.gw._scf.mo_energy)
+#    gw_e = np.asarray(bse.gw._scf.mo_energy)
     
     gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
     
-    #TODO: ???
     Loo = qkLij[:,:,:, bse.mf_nocc-nocc:bse.mf_nocc, bse.mf_nocc-nocc:bse.mf_nocc]
     Lov = qkLij[:,:,:, bse.mf_nocc-nocc:bse.mf_nocc, bse.mf_nocc:bse.mf_nocc+nvir]
     Lvv = qkLij[:,:,:, bse.mf_nocc:bse.mf_nocc+nvir, bse.mf_nocc:bse.mf_nocc+nvir]
@@ -155,7 +159,7 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
             # Find km that conserves with kn and kL (-km+kn+kL=G)
             km = all_kidx_r[kL][kn]
             # WARNING: Change back! TDA
-            #Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
+#            Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
             Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
                                             qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
     if bse.singlet:
@@ -194,7 +198,6 @@ from pyscf.pbc.gw.krgw_ac import get_rho_response
 from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo.incore import _conc_mos
 def make_imds(gw, orbs):
-    #TODO: not sure
     mo_energy = np.array(gw._scf.mo_energy)#[:,orbs] #mf mo_energy
     mo_coeff = np.array(gw._scf.mo_coeff)#[:,:,orbs]
     # nmo = len(orbs)
@@ -241,7 +244,6 @@ def make_imds(gw, orbs):
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
         naux = Lij.shape[1]
-        #TODO: not sure
         qkLij.append(Lij)
         all_kidx_r.append(kidx_r)
         
@@ -406,7 +408,7 @@ class BSE(krhf.TDA):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
                 diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
                 #WARNING: Change back! TDA
-                #diag[:,i,a] -= einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
+#                diag[:,i,a] -= (1/nkpts)*einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
