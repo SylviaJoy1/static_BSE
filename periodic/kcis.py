@@ -63,12 +63,6 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     # orbs_vir = sum([x > bse.mf_nocc for x in orbs])
     # if orbs_vir > bse.gw_nmo - bse.gw_nocc:
     #     orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
-
-    if len(orbs) > sum([x != 0 for x in bse.gw_e[0]]):
-        logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
-        raise RuntimeError
-
-    orbs = [orb for orb in orbs if bse.gw_e[0][orb] != 0]
     
     nocc = sum([x < bse.mf_nocc for x in orbs])
     nmo = len(orbs)
@@ -126,7 +120,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     #since the latter has kshifts
     return conv, nstates, e, xy
     
-def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
+def matvec(bse, r, qkLij, all_kidx_r, orbs):
     '''matrix-vector multiplication'''
    
     nocc = sum([x < bse.mf_nocc for x in orbs])
@@ -137,8 +131,6 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     kptlist = range(bse.nkpts)
     nklist = len(kptlist) 
     
-    gw_e = bse.gw_e 
-    #WARNING: Change back! TDA
     gw_e = np.asarray(bse.gw._scf.mo_energy)
     
     gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
@@ -158,10 +150,7 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
             kn = kptlist[k]
             # Find km that conserves with kn and kL (-km+kn+kL=G)
             km = all_kidx_r[kL][kn]
-            # WARNING: Change back! TDA
             Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
-#            Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
-#                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
     if bse.singlet:
         #kL is (0,0,0) 
         #should be already shifted back to 0 if shifted kmesh
@@ -194,11 +183,9 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
 #        return np.hstack((Hr1.ravel(), -Hr2.ravel()))
 
 
-from pyscf.pbc.gw.krgw_ac import get_rho_response
 from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo.incore import _conc_mos
 def make_imds(gw, orbs):
-    mo_energy = np.array(gw._scf.mo_energy)#[:,orbs] #mf mo_energy
     mo_coeff = np.array(gw._scf.mo_coeff)#[:,:,orbs]
     # nmo = len(orbs)
     nao = np.shape(gw._scf.mo_coeff)[-1]
@@ -211,7 +198,6 @@ def make_imds(gw, orbs):
     kscaled -= kscaled[0]
     
     qkLij = []
-    qeps_body_inv = []
     all_kidx_r = []
     for kL in range(nkpts):
         # Lij: (ki, L, i, j) for looping every kL
@@ -243,17 +229,10 @@ def make_imds(gw, orbs):
                     Lij_out = _ao2mo.r_e2(Lpq, moij, ijslice, tao, ao_loc, out=Lij_out)
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
-        naux = Lij.shape[1]
         qkLij.append(Lij)
         all_kidx_r.append(kidx_r)
         
-        # body dielectric matrix eps_body
-        #static screening for BSE
-        Pi = get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx)
-        eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
-        qeps_body_inv.append(eps_body_inv)
-        
-    return np.array(qkLij), qeps_body_inv, all_kidx_r
+    return np.array(qkLij), all_kidx_r
     
 from pyscf.pbc.tdscf import krhf
 class BSE(krhf.TDA):
@@ -292,7 +271,6 @@ class BSE(krhf.TDA):
         self._scf = gw._scf
         self.nkpts = gw.nkpts
         self.kpts = gw.kpts
-        self.gw_e = gw.mo_energy
         self.mo_energy = gw._scf.mo_energy
         self.verbose = self.mol.verbose
         self.stdout = gw.stdout
@@ -379,20 +357,18 @@ class BSE(krhf.TDA):
     
     def gen_matvec(self, orbs):
     
-        qkLij, qeps_body_inv, all_kidx_r = make_imds(self.gw, orbs)
+        qkLij, all_kidx_r = make_imds(self.gw, orbs)
         
-        diag = self.get_diag(qkLij[0,:], qeps_body_inv[0], orbs)
-        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx_r, orbs) for x in xs]
+        diag = self.get_diag(qkLij[0,:], orbs)
+        matvec = lambda xs: [self.matvec(x, qkLij, all_kidx_r, orbs) for x in xs]
         return matvec, diag
 
-    def get_diag(self, kLij, eps_body_inv, orbs):
+    def get_diag(self, kLij, orbs):
         nocc = sum([x < self.mf_nocc for x in orbs])
         nmo = len(orbs)
         nvir = nmo - nocc
         nkpts = self.nkpts
         
-        gw_e = self.gw_e
-        #WARNING: Change back! TDA
         gw_e = np.asarray(self.mo_energy)
         gw_e_occ = gw_e[:,self.mf_nocc-nocc:self.mf_nocc]
         gw_e_vir = gw_e[:,self.mf_nocc:self.mf_nocc+nvir]
@@ -406,8 +382,6 @@ class BSE(krhf.TDA):
         for i in range(nocc):
             for a in range(nvir):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
-#                diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
-                #WARNING: Change back! TDA
                 diag[:,i,a] -= (1/nkpts)*einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
@@ -495,11 +469,11 @@ if __name__ == '__main__':
     mygw.ac = 'pade'
     # without finite size corrections
     mygw.fc = False
-    mygw.kernel(orbs=gw_orbs)
-    kgw_e = mygw.mo_energy
-    gw_nocc = mygw.nocc
-    gw_vir = mygw.nmo - gw_nocc
-    sorted_kgw_gaps = sorted([27.2114*(a-i) for a in kgw_e[0][nocc:nocc+gw_vir] for i in kgw_e[0][nocc-gw_nocc:nocc]])
+    # mygw.kernel(orbs=gw_orbs)
+    # kgw_e = mygw.mo_energy
+    # gw_nocc = mygw.nocc
+    # gw_vir = mygw.nmo - gw_nocc
+    # sorted_kgw_gaps = sorted([27.2114*(a-i) for a in kgw_e[0][nocc:nocc+gw_vir] for i in kgw_e[0][nocc-gw_nocc:nocc]])
     
     mybse = BSE(mygw, TDA=True, singlet=True)
     conv, excitations, ekS, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
@@ -507,6 +481,8 @@ if __name__ == '__main__':
     mybse.singlet=False
     conv, excitations, ekT, xy = mybse.kernel(nstates=_nstates, orbs=bse_orbs)
     
+    import sys
+    sys.exit()
     
     #molecule
     mol = cell.to_mol()
