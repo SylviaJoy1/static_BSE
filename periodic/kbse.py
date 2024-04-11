@@ -469,7 +469,6 @@ if __name__ == '__main__':
     import bse
     from pyscf.pbc.gw import krgw_ac
     
-    
     ##########################################################
     # same as molecular BSE for large cell size with cell.dim = 0. 
     # Any difference is exactly due to the GW not matching.
@@ -551,111 +550,8 @@ if __name__ == '__main__':
 #           for singlets and triplets!')
     
     ##########################################################
-    # kBSE are same for 2x2x2 supercell and 2x2x2 kpt sampling?
-    #Yes for szv, but not for dzvp. But PBC TDSCF isn't either! Madelung? Why? Confused.
-    # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
-    #kpt sampling
-    formula = 'c'
-    ase_atom = lattice.get_ase_atom(formula)
-    cell = pbcgto.Cell()
-    cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
-    cell.a = ase_atom.cell
-    cell.unit = 'B'
-    cell.basis = 'gth-dzvp' #I think szv is not working
-    cell.pseudo = 'gth-pade'
-    cell.build(verbose=7)
-    
-    fnl = 'lda'
-    scaled_center=[0.0, 0.0, 0.0]
-    
-    kmesh = [2,2,2] #only 2x2x2 kmesh seems to work right
-    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
-    #must have exxdiv=None
-    mymf = pbcdft.KRKS(cell, kpts, exxdiv=None).density_fit()
-    # from pyscf.pbc import df
-    # gdf = df.GDF(cell, kpts)
-    # mymf.with_df = gdf
-    mymf.xc = fnl
-    ekrhf = mymf.kernel()
-    
-    nocc = cell.nelectron//2
-    nmo = np.shape(mymf.mo_energy)[-1]
-    nvir = nmo-nocc
-    
-    gw_orbs = range(nmo)
-    bse_orbs = range(nmo)
-    _nstates = 2
-    
-    # mygw = krgw_ac.KRGWAC(mymf)
-    # mygw.linearized = True
-    # mygw.ac = 'pade'
-    # # without finite size corrections
-    # mygw.fc = False
-    # mygw.kernel(orbs=gw_orbs)
-    # kgw_e = mygw.mo_energy
-    
-    # bse = BSE(mygw, TDA=True, singlet=True)
-    # conv, excitations, ekS, xy = bse.kernel(nstates = _nstates, orbs=bse_orbs)
-    
-    # bse.singlet=False
-    # conv, excitations, ekT, xy = bse.kernel(nstates = _nstates, orbs=bse_orbs)
-    
-    # mypbctd = mymf.TDA()
-    # TDAkeS = mypbctd.run(nstates = _nstates).e
-    # TDAkeT = mypbctd.run(nstates = _nstates, singlet = False).e
- 
-    #supercell
-    from pyscf.pbc.tools.pbc import super_cell 
-    cell = super_cell(cell, [2,2,2])
-    cell.verbose = 7
-    cell.build()
-    
-    kdensity = 1
-    kmesh = [kdensity, kdensity, kdensity]
-    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
-    #must have exxdiv=None
-    mymf = pbcdft.KRKS(cell, kpts=kpts, exxdiv=None).density_fit()
-    mymf.xc = fnl
-    ekrhf = mymf.kernel()
-    
-    nocc = cell.nelectron//2
-    nmo = np.shape(mymf.mo_energy)[-1]
-    nvir = nmo-nocc
-    
-    mygw = krgw_ac.KRGWAC(mymf)
-    mygw.linearized = True
-    mygw.ac = 'pade'
-    # without finite size corrections
-    mygw.fc = False
-    mygw.kernel(orbs=gw_orbs)
-    gw_e = mygw.mo_energy
-    
-    bse = BSE(mygw, TDA=True, singlet=True)
-    conv, excitations, eS, xy = bse.kernel(nstates = _nstates, orbs=bse_orbs)
-
-    bse.singlet=False
-    conv, excitations, eT, xy = bse.kernel(nstates = _nstates, orbs=bse_orbs)
-    
-    # mypbctd = mymf.TDA()
-    # TDAeS = mypbctd.run(nstates = _nstates).e
-    # TDAeT = mypbctd.run(nstates = _nstates, singlet = False).e
-    
-    # print('BSE singlets', 27.2114*ekS, 27.2114*eS)
-    # print('BSE triplets', 27.2114*ekT, 27.2114*eT)
-    
-    # print('TDA singlets', TDAkeS, TDAeS)
-    # print('TDA triplets', TDAkeT, TDAeT)
-    
-    # print('GW', 27.2114*kgw_e, 27.2114*gw_e)
-    
-    # for i in range(_nstates):
-    #     assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005)
-    #     print(str(i)+' singlet matches to within 0.005 eV')
-    #     assert(abs(27.2114*(ekT[i] - eT[i])) < 0.005)
-    #     print(str(i)+' triplet matches to within 0.005 eV')
-    
-    print('BSE supercell at Gamma pt matches BSE unit cell with kpt sampling \
-          \n for singlets and triplets!')
+    # Can't check that a supercell has same excitations as unit cell with corresponding kmesh:
+    #cannot target just Gamma pt excitations unless I implement that
     
     ##########################################################
     # same as kTDA when replace GW energies with MF ones and turn off screening (not just at Gamma pt)
