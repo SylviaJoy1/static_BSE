@@ -23,7 +23,12 @@ with or without TDA, singlet or triplet excitations.
 Density-fitted. Turbomole-style.
 Periodic.
 Frozen orbitals.
-Requires Nk^2 * Naux * Nmo^2 memory (sim. to hybrid f'nl)
+Requires Nk^2 * Naux * [norb]^2 memory (sim. to hybrid f'nl)
+NOTE: Nk^2 * Naux * Nmo^2 memory is often too high,
+so my previous solution was to re-access the integrals each matvec so
+the memory is only Nk * Naux * Nmo^2. But that is too slow.
+Now my solution is to only keep the necessary Nk^2 * Naux * [norb]^2 integrals in memory,
+and hope that norb << nmo.
 '''
 
 import numpy as np
@@ -144,9 +149,9 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     gw_e_occ = gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
     
-    Loo = qkLij[:,:,:, bse.mf_nocc-nocc:bse.mf_nocc, bse.mf_nocc-nocc:bse.mf_nocc]
-    Lov = qkLij[:,:,:, bse.mf_nocc-nocc:bse.mf_nocc, bse.mf_nocc:bse.mf_nocc+nvir]
-    Lvv = qkLij[:,:,:, bse.mf_nocc:bse.mf_nocc+nvir, bse.mf_nocc:bse.mf_nocc+nvir]
+    Loo = qkLij[:,:,:, :nocc, :nocc]
+    Lov = qkLij[:,:,:, :nocc, nocc:]
+    Lvv = qkLij[:,:,:, nocc:, nocc:]
     
     r1 = r[:nkpts*nocc*nvir].copy().reshape(nkpts, nocc, nvir)
     
@@ -198,6 +203,11 @@ from pyscf.pbc.gw.krgw_ac import get_rho_response
 from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo.incore import _conc_mos
 def make_imds(gw, orbs):
+    mf_nocc = gw._scf.mol.nelectron//2
+    nocc = sum([x < mf_nocc for x in orbs])
+    nmo = len(orbs)
+    nvir = nmo - nocc
+    
     mo_energy = np.array(gw._scf.mo_energy)#[:,orbs] #mf mo_energy
     mo_coeff = np.array(gw._scf.mo_coeff)#[:,:,orbs]
     # nmo = len(orbs)
@@ -244,7 +254,7 @@ def make_imds(gw, orbs):
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
         naux = Lij.shape[1]
-        qkLij.append(Lij)
+        qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
         all_kidx_r.append(kidx_r)
         
         # body dielectric matrix eps_body
@@ -349,7 +359,7 @@ class BSE(krhf.TDA):
         nmo = self.mf_nmo
         naux = self.with_df.get_naoaux()
         nkpts = self.nkpts
-        mem_incore = (2*nkpts**2*nmo**2*naux) * 16/1e6
+        mem_incore = max(2*nkpts*nmo**2*naux, 2*nkpts**2*len(orbs)**2*naux) * 16/1e6
         mem_now = lib.current_memory()[0]
         if (mem_incore + mem_now > 0.99*self.max_memory):
             logger.warn(self, 'Memory may not be enough!')
@@ -398,9 +408,9 @@ class BSE(krhf.TDA):
         gw_e_vir = gw_e[:,self.mf_nocc:self.mf_nocc+nvir]
         
         
-        Loo = kLij[:,:, self.mf_nocc-nocc:self.mf_nocc, self.mf_nocc-nocc:self.mf_nocc]
-        Lov = kLij[:,:, self.mf_nocc-nocc:self.mf_nocc, self.mf_nocc:self.mf_nocc+nvir]
-        Lvv = kLij[:,:, self.mf_nocc:self.mf_nocc+nvir, self.mf_nocc:self.mf_nocc+nvir]
+        Loo = kLij[:,:, :nocc, :nocc]
+        Lov = kLij[:,:, :nocc, nocc:]
+        Lvv = kLij[:,:, nocc:, nocc:]
         
         diag = np.zeros((nkpts, nocc, nvir), dtype='complex128')
         for i in range(nocc):
