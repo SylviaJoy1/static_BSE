@@ -475,10 +475,11 @@ if __name__ == '__main__':
     # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
     #kpt sampling
     cell = pbcgto.Cell()
-    cell.atom = [['He', 0, 0, 0],
-                ['He', 1.4, 0, 0]]
-    cell.a = np.eye(3)#*50
-    cell.unit = 'B'
+    cell.atom = '''
+O        0.000000    0.000000    0.117790
+H        0.000000    0.755453   -0.471161
+H        0.000000   -0.755453   -0.471161'''
+    cell.a = np.eye(3)
     cell.basis = 'gth-tzvp'
     cell.pseudo = 'gth-pade'
     cell.dimension = 0
@@ -498,10 +499,10 @@ if __name__ == '__main__':
     nocc = cell.nelectron//2
     nmo = np.shape(mymf.mo_energy)[-1]
     nvir = nmo-nocc
-    
-    gw_orbs = range(nmo)#range(nmo)
+    print('nmo', nmo)
+    gw_orbs = range(nmo-2)#range(nmo)
     bse_orbs = range(nmo-4)
-    _nstates = 5
+    _nstates = 6
     
     mygw = krgw_ac.KRGWAC(mymf)
     mygw.linearized = True
@@ -511,7 +512,7 @@ if __name__ == '__main__':
     mygw.kernel(orbs=gw_orbs)
     kgw_e = mygw.mo_energy
     gw_nocc = mygw.nocc
-    gw_vir = mygw.nmo - gw_nocc
+    gw_vir = sum([e>0 for e in kgw_e[0]]) - gw_nocc
     sorted_kgw_gaps = sorted([27.2114*(a-i) for a in kgw_e[0][nocc:nocc+gw_vir] for i in kgw_e[0][nocc-gw_nocc:nocc]])
     
     mybse = BSE(mygw, TDA=True, singlet=True)
@@ -544,13 +545,15 @@ if __name__ == '__main__':
     
     for i in range(_nstates):
         assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005+abs(sorted_kgw_gaps[i]-sorted_gw_gaps[i]))
-        print(str(i)+' singlet agrees to within 0.005 eV')    
+        print(str(i)+' singlet agrees to within 0.005 eV of GW error')    
         assert(abs(27.2114*(ekT[i] - eT[i])) < 0.005+abs(sorted_kgw_gaps[i]-sorted_gw_gaps[i]))
-        print(str(i)+' triplet agrees to within 0.005 eV')  
+        print(str(i)+' triplet agrees to within 0.005 eV of GW error')  
         
     print('BSE for a large cell with cell.dim = 0 is the same as molecular BSE \
           for singlets and triplets!')
     
+    import sys
+    sys.exit()
     ##########################################################
     # kBSE are same for 2x2x2 supercell and 2x2x2 kpt sampling?
     #Yes for szv, but not for dzvp. But PBC TDSCF isn't either! Madelung? Why? Confused.
@@ -562,7 +565,7 @@ if __name__ == '__main__':
     cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
     cell.a = ase_atom.cell
     cell.unit = 'B'
-    cell.basis = 'gth-dzvp'
+    cell.basis = 'gth-szv'
     cell.pseudo = 'gth-pade'
     cell.build(verbose=2)
     
