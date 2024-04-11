@@ -106,6 +106,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
                        tol=bse.conv_tol, max_cycle=bse.max_cycle,
                        max_space=bse.max_space, nroots=nroots, verbose=log)
     xy =   [(xi[:nocc*nvir].reshape(nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
+    # xy =   [xi[:nocc*nvir].reshape(nocc, nvir)*np.sqrt(.5) for xi in xy]
         
     if bse.verbose >= logger.INFO:
         np.set_printoptions(threshold=nocc*nvir)
@@ -179,10 +180,9 @@ from types import SimpleNamespace
 
 from pyscf.ao2mo import _ao2mo
 def make_imds(gw, orbs):
-    mf_nocc = gw._scf.mol.nelectron//2
+    nocc = gw._scf.mol.nelectron//2
     mo_coeff = np.array(gw._scf.mo_coeff)#[:,orbs]
-    nocc = sum([x < mf_nocc for x in orbs])
-    nmo = len(orbs)
+    nmo = np.shape(mo_coeff)[-1]
     nvir = nmo - nocc
   
     
@@ -205,16 +205,20 @@ def make_imds(gw, orbs):
         Lov[p0:p1] = Lpq[:,:nocc,nocc:]
         Lvv[p0:p1] = Lpq[:,nocc:,nocc:]
 
-    eris = SimpleNamespace()
-    eris.Loo = Loo[:, -nocc:, -nocc:]
-    eris.Lov = Lov[:,-nocc:, :nvir]
-    eris.Lvv = Lvv[:,:nvir,:nvir]
-
     mo_energy = gw._scf.mo_energy#[np.ix_(orbs)]
     QP_diff = (mo_energy[:nocc, None]-mo_energy[None, nocc:]).T
     i_mat = 4*einsum('Pia,Qia,ai->PQ', Lov, Lov, 1./QP_diff)
     i_tilde = np.linalg.inv(np.eye(np.shape(i_mat)[0])-i_mat)
 #    R_tilde = make_R_tilde(bse.mf, eris)
+    
+
+    nocc = sum([x < nocc for x in orbs])
+    nmo = len(orbs)
+    nvir = nmo - nocc
+    eris = SimpleNamespace()
+    eris.Loo = Loo[:, -nocc:, -nocc:]
+    eris.Lov = Lov[:,-nocc:, :nvir]
+    eris.Lvv = Lvv[:,:nvir,:nvir]
     
     return eris, i_tilde
     
@@ -357,12 +361,7 @@ class BSE(rhf.TDA):
     #     if nstates is None: nstates = self.nstates
        
     #     if gw_e is None: gw_e = self.gw_e
-    #     print('self.mf_nocc:self.mf_nocc+nvir', self.mf_nocc,self.mf_nocc+nvir)
-    #     print('self.mf_nocc-nocc:self.mf_nocc', self.mf_nocc-nocc,self.mf_nocc)
-    #     print('GW occ', gw_e[self.mf_nocc-nocc:self.mf_nocc, None])
-    #     print('GW vir', gw_e[None,self.mf_nocc:self.mf_nocc+nvir])
     #     Ediff = gw_e[None,self.mf_nocc:self.mf_nocc+nvir] - gw_e[self.mf_nocc-nocc:self.mf_nocc, None]
-    #     print('np.shape(Ediff)', np.shape(Ediff))
     #     e_ia = np.hstack([x.ravel() for x in Ediff])
     #     e_ia_max = e_ia.max()
     #     nov = e_ia.size
@@ -442,7 +441,7 @@ if __name__ == '__main__':
      nmo = mf.mo_energy.size
      nvir = nmo-nocc
 
-     mygw = gw.GW(mf, frozen=0, freq_int='ac')
+     mygw = gw.GW(mf, freq_int='ac')
      mygw.kernel(orbs=range(nmo))
      gw_e = mygw.mo_energy
      print('gw_e', gw_e)
@@ -459,10 +458,11 @@ if __name__ == '__main__':
      print('BSE singlet matches lit')
 
      bse.singlet=False
-     conv, excitations, e, xy = bse.kernel(nstates=3, orbs=range(nmo))
+     conv, excitations, e, xy = bse.kernel(nstates=4, orbs=range(nmo))
      print(e*27.2114)
      assert(abs(27.2114*bse.e[0] - 7.61802) < 5*1e-2)
      assert(abs(27.2114*bse.e[1] - 9.59825) < 5*1e-2)
      assert(abs(27.2114*bse.e[2] - 9.79518) < 5*1e-2)
      # bse.analyze()
      print('BSE triplet matches lit')
+     print('nocc, nvir', nocc, nvir)

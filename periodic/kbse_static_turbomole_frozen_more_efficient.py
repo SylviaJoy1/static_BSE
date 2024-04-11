@@ -461,6 +461,7 @@ class BSE(krhf.TDA):
 
 if __name__ == '__main__':
     from pyscf.pbc import gto as pbcgto
+    from pyscf.pbc import dft as pbcdft
     from pyscf import gto
     from pyscf.pbc.tools import pyscf_ase, lattice
     import bse_static_turbomole_for_gwac_frozen as bse
@@ -476,12 +477,14 @@ if __name__ == '__main__':
     cell = pbcgto.Cell()
     cell.atom = [['He', 0, 0, 0],
                 ['He', 1.4, 0, 0]]
-    cell.a = np.eye(3)*50
+    cell.a = np.eye(3)#*50
     cell.unit = 'B'
-    cell.basis = 'gth-dzvp'
+    cell.basis = 'gth-tzvp'
     cell.pseudo = 'gth-pade'
     cell.dimension = 0
     cell.build()
+    
+    fnl = 'pbe0'
     
     kdensity = 1
     kmesh = [kdensity, kdensity, kdensity]
@@ -489,7 +492,7 @@ if __name__ == '__main__':
     kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
     #must have exxdiv=None
     mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
-    mymf.xc = 'pbe'
+    mymf.xc = fnl
     ekrhf = mymf.kernel()
     
     nocc = cell.nelectron//2
@@ -497,7 +500,7 @@ if __name__ == '__main__':
     nvir = nmo-nocc
     
     gw_orbs = range(nmo)#range(nmo)
-    bse_orbs = range(nmo)
+    bse_orbs = range(nmo-4)
     _nstates = 5
     
     mygw = krgw_ac.KRGWAC(mymf)
@@ -520,11 +523,11 @@ if __name__ == '__main__':
     
     #molecule
     mol = cell.to_mol()
-    mol.build()
-
+    # mol.build()
+    
     from pyscf import dft
     mf = dft.RKS(mol).density_fit()
-    mf.xc = 'pbe'
+    mf.xc = fnl
     mf.kernel()
 
     from pyscf import gw
@@ -548,117 +551,113 @@ if __name__ == '__main__':
     print('BSE for a large cell with cell.dim = 0 is the same as molecular BSE \
           for singlets and triplets!')
     
-    # weights, bse_coeff = mybse.get_nto(state=1)
-    # from pyscf.tools import cubegen
-    # cubegen.orbital(mol, 'test.cub', bse_coeff[:,0])
-    
     ##########################################################
     # kBSE are same for 2x2x2 supercell and 2x2x2 kpt sampling?
     #Yes for szv, but not for dzvp. But PBC TDSCF isn't either! Madelung? Why? Confused.
     # Candidate formula of solid: c, si, sic, bn, bp, aln, alp, mgo, mgs, lih, lif, licl
     #kpt sampling
-    # formula = 'c'
-    # ase_atom = lattice.get_ase_atom(formula)
-    # cell = pbcgto.Cell()
-    # cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
-    # cell.a = ase_atom.cell
-    # cell.unit = 'B'
-    # cell.basis = 'gth-dzvp'
-    # cell.pseudo = 'gth-pade'
-    # cell.build(verbose=2)
+    formula = 'c'
+    ase_atom = lattice.get_ase_atom(formula)
+    cell = pbcgto.Cell()
+    cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
+    cell.a = ase_atom.cell
+    cell.unit = 'B'
+    cell.basis = 'gth-dzvp'
+    cell.pseudo = 'gth-pade'
+    cell.build(verbose=2)
     
-    # kmesh = [2,2,2]
-    # scaled_center=[0.0, 0.0, 0.0]
-    # kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
-    # #must have exxdiv=None
-    # mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
-    # # from pyscf.pbc import df
-    # # gdf = df.GDF(cell, kpts)
-    # # mymf.with_df = gdf
-    # mymf.xc = 'lda'
-    # ekrhf = mymf.kernel()
+    kmesh = [2,2,2]
+    scaled_center=[0.0, 0.0, 0.0]
+    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
+    #must have exxdiv=None
+    mymf = pbcdft.KRKS(cell, kpts, exxdiv=None).density_fit()
+    # from pyscf.pbc import df
+    # gdf = df.GDF(cell, kpts)
+    # mymf.with_df = gdf
+    mymf.xc = 'lda'
+    ekrhf = mymf.kernel()
     
-    # nocc = cell.nelectron//2
-    # nmo = np.shape(mymf.mo_energy)[-1]
-    # nvir = nmo-nocc
+    nocc = cell.nelectron//2
+    nmo = np.shape(mymf.mo_energy)[-1]
+    nvir = nmo-nocc
+    print('nocc, nvir', nocc, nvir)
+    
+    mygw = krgw_ac.KRGWAC(mymf)
+    mygw.linearized = True
+    mygw.ac = 'pade'
+    # without finite size corrections
+    mygw.fc = False
+    mygw.kernel(orbs=range(nmo-10))
+    kgw_e = mygw.mo_energy
+    
+    _nstates = nmo
+    
+    bse = BSE(mygw, TDA=True, singlet=True)
+    conv, excitations, ekS, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
+    
+    bse.singlet=False
+    conv, excitations, ekT, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
+    
+    # mypbctd = mymf.TDA()
+    # TDAkeS = mypbctd.run(nstates = _nstates).e
+    # TDAkeT = mypbctd.run(nstates = _nstates, singlet = False).e
+    
+    # print(ekS*27.2114)
     # print('nocc, nvir', nocc, nvir)
+    # import sys
+    # sys.exit()
     
-    # mygw = krgw_ac.KRGWAC(mymf)
-    # mygw.linearized = True
-    # mygw.ac = 'pade'
-    # # without finite size corrections
-    # mygw.fc = False
-    # mygw.kernel(orbs=range(nmo-10))
-    # kgw_e = mygw.mo_energy
+    #supercell
+    from pyscf.pbc.tools.pbc import super_cell 
+    cell = super_cell(cell, [2,2,2])
+    cell.build()
     
-    # _nstates = nmo
+    kdensity = 1
+    kmesh = [kdensity, kdensity, kdensity]
+    kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
+    #must have exxdiv=None
+    mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
+    mymf.xc = 'lda'
+    ekrhf = mymf.kernel()
     
-    # bse = BSE(mygw, TDA=True, singlet=True)
-    # conv, excitations, ekS, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
+    nocc = cell.nelectron//2
+    nmo = np.shape(mymf.mo_energy)[-1]
+    nvir = nmo-nocc
     
-    # bse.singlet=False
-    # conv, excitations, ekT, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
+    mygw = krgw_ac.KRGWAC(mymf)
+    mygw.linearized = True
+    mygw.ac = 'pade'
+    # without finite size corrections
+    mygw.fc = False
+    mygw.kernel(orbs=range(nmo-10))
+    gw_e = mygw.mo_energy
     
-    # # mypbctd = mymf.TDA()
-    # # TDAkeS = mypbctd.run(nstates = _nstates).e
-    # # TDAkeT = mypbctd.run(nstates = _nstates, singlet = False).e
-    
-    # # print(ekS*27.2114)
-    # # print('nocc, nvir', nocc, nvir)
-    # # import sys
-    # # sys.exit()
-    
-    # #supercell
-    # from pyscf.pbc.tools.pbc import super_cell 
-    # cell = super_cell(cell, [2,2,2])
-    # cell.build()
-    
-    # kdensity = 1
-    # kmesh = [kdensity, kdensity, kdensity]
-    # kpts = cell.make_kpts(kmesh, scaled_center=scaled_center)
-    # #must have exxdiv=None
-    # mymf = dft.KRKS(cell, kpts, exxdiv=None).density_fit()
-    # mymf.xc = 'lda'
-    # ekrhf = mymf.kernel()
-    
-    # nocc = cell.nelectron//2
-    # nmo = np.shape(mymf.mo_energy)[-1]
-    # nvir = nmo-nocc
-    
-    # mygw = krgw_ac.KRGWAC(mymf)
-    # mygw.linearized = True
-    # mygw.ac = 'pade'
-    # # without finite size corrections
-    # mygw.fc = False
-    # mygw.kernel(orbs=range(nmo-10))
-    # gw_e = mygw.mo_energy
-    
-    # bse = BSE(mygw, TDA=True, singlet=True)
-    # conv, excitations, eS, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
+    bse = BSE(mygw, TDA=True, singlet=True)
+    conv, excitations, eS, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
 
-    # bse.singlet=False
-    # conv, excitations, eT, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
+    bse.singlet=False
+    conv, excitations, eT, xy = bse.kernel(nstates = _nstates, orbs=range(nmo-10))
     
-    # # mypbctd = mymf.TDA()
-    # # TDAeS = mypbctd.run(nstates = _nstates).e
-    # # TDAeT = mypbctd.run(nstates = _nstates, singlet = False).e
+    # mypbctd = mymf.TDA()
+    # TDAeS = mypbctd.run(nstates = _nstates).e
+    # TDAeT = mypbctd.run(nstates = _nstates, singlet = False).e
     
-    # print('BSE singlets', 27.2114*ekS, 27.2114*eS)
-    # print('BSE triplets', 27.2114*ekT, 27.2114*eT)
+    print('BSE singlets', 27.2114*ekS, 27.2114*eS)
+    print('BSE triplets', 27.2114*ekT, 27.2114*eT)
     
-    # # print('TDA singlets', TDAkeS, TDAeS)
-    # # print('TDA triplets', TDAkeT, TDAeT)
+    # print('TDA singlets', TDAkeS, TDAeS)
+    # print('TDA triplets', TDAkeT, TDAeT)
     
-    # print('GW', 27.2114*kgw_e, 27.2114*gw_e)
+    print('GW', 27.2114*kgw_e, 27.2114*gw_e)
     
-    # for i in range(_nstates):
-    #     # assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005)
-    #     print(str(i)+' singlet matches to within 0.005 eV')
-    #     # assert(abs(27.2114*(ekT[i] - eT[i])) < 0.005)
-    #     print(str(i)+' triplet matches to within 0.005 eV')
+    for i in range(_nstates):
+        # assert(abs(27.2114*(ekS[i] - eS[i])) < 0.005)
+        print(str(i)+' singlet matches to within 0.005 eV')
+        # assert(abs(27.2114*(ekT[i] - eT[i])) < 0.005)
+        print(str(i)+' triplet matches to within 0.005 eV')
     
-    # print('BSE supercell at Gamma pt matches BSE unit cell with kpt sampling \
-    #       \n for singlets and triplets!')
+    print('BSE supercell at Gamma pt matches BSE unit cell with kpt sampling \
+          \n for singlets and triplets!')
           
           
     import sys
