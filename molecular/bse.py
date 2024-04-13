@@ -444,8 +444,7 @@ if __name__ == '__main__':
      mygw = gw.GW(mf, freq_int='ac')
      mygw.kernel(orbs=range(nmo))
      gw_e = mygw.mo_energy
-     print('gw_e', gw_e)
-
+     
      #Technically, should be TDA=False to compare with lit values
      bse = BSE(mygw, TDA=True, singlet=True)
      bse.verbose = 9
