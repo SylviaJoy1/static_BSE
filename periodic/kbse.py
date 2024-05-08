@@ -43,6 +43,7 @@ einsum = lib.einsum
 REAL_EIG_THRESHOLD = getattr(__config__, 'pbc_tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
 # Low excitation filter to avoid numerical instability
 POSITIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
+deg_eia_thresh = getattr(__config__, 'tdscf_rhf_TDDFT_deg_eia_thresh', 1e-3)
 MO_BASE = getattr(__config__, 'MO_BASE', 1)
 
 def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
@@ -452,17 +453,17 @@ class BSE(krhf.TDA):
             raise NotImplementedError
             # return np.hstack((diag, -diag))
         
-    def get_init_guess(self, nstates, orbs, diag=None):        
-        idx = diag.argsort()
-        size = self.vector_size(orbs)
-        dtype = getattr(diag, 'dtype', self.mo_coeff[0].dtype)
-        nroots = nstates
-        guess = []
-        for i in idx[:nroots]:
-            g = np.zeros(size, dtype)
-            g[i] = 1.0
-            guess.append(g)
-        return guess, nroots
+    #def get_init_guess(self, nstates, orbs, diag=None):        
+    #    idx = diag.argsort()
+    #    size = self.vector_size(orbs)
+    #    dtype = getattr(diag, 'dtype', self.mo_coeff[0].dtype)
+    #    nroots = nstates
+    #    guess = []
+    #    for i in idx[:nroots]:
+    #        g = np.zeros(size, dtype)
+    #        g[i] = 1.0
+    #        guess.append(g)
+    #    return guess, nroots
     
     def get_init_guess(self, nstates, orbs, diag=None):
         mo_energy = self._scf.mo_energy
@@ -472,7 +473,6 @@ class BSE(krhf.TDA):
         nov = e_ia.size
         nstates = min(nstates, nov)
         e_threshold = np.sort(e_ia)[nstates-1]
-        deg_eia_thresh = getattr(__config__, 'tdscf_rhf_TDDFT_deg_eia_thresh', 1e-3)
         e_threshold += deg_eia_thresh
 
         idx = np.where(e_ia <= e_threshold)[0]
