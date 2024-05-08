@@ -30,7 +30,7 @@ the memory is only Nk * Naux * Nmo^2. But that is too slow.
 Now my solution is to only keep the necessary Nk^2 * Naux * [norb]^2 integrals in memory,
 and hope that norb << nmo.
 '''
-
+import time
 import numpy as np
 from pyscf import lib
 from pyscf.pbc import dft as pbcdft
@@ -40,9 +40,9 @@ from pyscf import __config__
 from pyscf.pbc.lib.kpts_helper import gamma_point
 einsum = lib.einsum
     
-REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
+REAL_EIG_THRESHOLD = getattr(__config__, 'pbc_tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
 # Low excitation filter to avoid numerical instability
-POSTIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
+POSITIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
 MO_BASE = getattr(__config__, 'MO_BASE', 1)
 
 def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
@@ -96,7 +96,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     nroots = nstates
 
     def precond(r, e0, x0):
-        return r/(e0-diag+1e-12)
+        return r/(e0-diag+1e-8)
 
     if bse.TDA:
         eig = lib.davidson1
@@ -109,8 +109,9 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     
     def pickeig(w, v, nroots, envs):
         real_idx = np.where((abs(w.imag) < REAL_EIG_THRESHOLD) &
-                              (w.real > POSTIVE_EIG_THRESHOLD))[0]
+                              (w.real > POSITIVE_EIG_THRESHOLD))[0]
         return lib.linalg_helper._eigs_cmplx2real(w, v, real_idx, real_system)
+    
     conv, e, xy = eig(matvec, guess, precond, pick=pickeig,
                        tol=bse.conv_tol, max_cycle=bse.max_cycle,
                        max_space=bse.max_space, nroots=nroots, verbose=log)
@@ -219,6 +220,7 @@ def make_imds(gw, orbs):
     qeps_body_inv = []
     all_kidx_r = []
     for kL in range(nkpts):
+        ints_batch_t0 = time.process_time()
         # Lij: (ki, L, i, j) for looping every kL
         Lij = []
         # kidx: save kj that conserves with kL and ki (-ki+kj+kL=G)
@@ -251,15 +253,32 @@ def make_imds(gw, orbs):
         naux = Lij.shape[1]
         qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
         all_kidx_r.append(kidx_r)
-        
+        print('integral batch', time.process_time()-ints_batch_t0)
+
         # body dielectric matrix eps_body
         #static screening for BSE
+        t0 = time.process_time()
         Pi = get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx)
+        print('get_rho_response', time.process_time()-t0)
+
+        t0 = time.process_time() 
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
+        print('eps_body_inv', time.process_time()-t0)
         qeps_body_inv.append(eps_body_inv)
         
     return np.array(qkLij), qeps_body_inv, all_kidx_r
     
+def _get_e_ia(mo_energy, mo_occ):
+    e_ia = []
+    nkpts = len(mo_occ)
+    kconserv = np.arange(nkpts)
+    for k in range(nkpts):
+        kp = kconserv[k]
+        moeocc = mo_energy[k][mo_occ[k] > 1e-6]
+        moevir = mo_energy[kp][mo_occ[kp] < 1e-6]
+        e_ia.append( -moeocc[:,None] + moevir )
+    return e_ia
+
 from pyscf.pbc.tdscf import krhf
 class BSE(krhf.TDA):
     '''static screening BSE
@@ -314,9 +333,9 @@ class BSE(krhf.TDA):
         else:
             raise NotImplementedError
 
-        self.max_space = getattr(__config__, 'eom_rccsd_EOM_max_space', 20)
-        self.max_cycle = getattr(__config__, 'eom_rccsd_EOM_max_cycle', 50)
-        self.conv_tol = getattr(__config__, 'eom_rccsd_EOM_conv_tol', 1e-7)
+        max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 50)
+        max_cycle = getattr(__config__, 'tdscf_rhf_TDA_max_cycle', 100)
+        self.conv_tol = getattr(__config__, 'eom_rccsd_EOM_conv_tol', 1e-6)
         self.nstates = getattr(__config__, 'tdscf_rhf_TDA_nstates', 3)
 
         self.frozen = gw.frozen
@@ -355,6 +374,8 @@ class BSE(krhf.TDA):
         if getattr(self, 'TDA') is False:
             logger.warn(self, 'non-TDA BSE may not always converge (triplet instability problem).')
         logger.info(self, 'singlet = %s', self.singlet)
+        if not self._scf.converged:
+            log.warn('Ground state SCF is not converged')
         return self
     
     def kernel(self, nstates=None, orbs=None):
@@ -393,7 +414,9 @@ class BSE(krhf.TDA):
     
     def gen_matvec(self, orbs):
     
+        imds_t0 = time.process_time()
         qkLij, qeps_body_inv, all_kidx_r = make_imds(self.gw, orbs)
+        print('imds total time', time.process_time()-imds_t0)
         
         diag = self.get_diag(qkLij[0,:], qeps_body_inv[0], orbs)
         matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx_r, orbs) for x in xs]
@@ -440,7 +463,23 @@ class BSE(krhf.TDA):
             g[i] = 1.0
             guess.append(g)
         return guess, nroots
+    
+    def get_init_guess(self, nstates, orbs, diag=None):
+        mo_energy = self._scf.mo_energy
+        mo_occ = self._scf.mo_occ
+        e_ia = np.concatenate( [x.reshape(-1) for x in
+                                   _get_e_ia(mo_energy, mo_occ)] )
+        nov = e_ia.size
+        nstates = min(nstates, nov)
+        e_threshold = np.sort(e_ia)[nstates-1]
+        deg_eia_thresh = getattr(__config__, 'tdscf_rhf_TDDFT_deg_eia_thresh', 1e-3)
+        e_threshold += deg_eia_thresh
 
+        idx = np.where(e_ia <= e_threshold)[0]
+        x0 = np.zeros((idx.size, nov))
+        for i, j in enumerate(idx):
+            x0[i, j] = 1  # Koopmans' excitations
+        return np.array(x0, dtype='complex128'), nstates
 
     # @property
     # def nocc(self):
