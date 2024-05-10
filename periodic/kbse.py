@@ -38,6 +38,7 @@ from pyscf.pbc import scf as pbcscf
 from pyscf.lib import logger
 from pyscf import __config__
 from pyscf.pbc.lib.kpts_helper import gamma_point
+from pyscf.pbc.tdscf import krhf
 einsum = lib.einsum
     
 REAL_EIG_THRESHOLD = getattr(__config__, 'pbc_tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
@@ -113,14 +114,16 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
                               (w.real > POSITIVE_EIG_THRESHOLD))[0]
         return lib.linalg_helper._eigs_cmplx2real(w, v, real_idx, real_system)
     
+    precision = bse._scf.cell.precision * 1e-2
     conv, e, xy = eig(matvec, guess, precond, pick=pickeig,
                        tol=bse.conv_tol, max_cycle=bse.max_cycle,
-                       max_space=bse.max_space, nroots=nroots, verbose=log)
+                       max_space=bse.max_space, nroots=nroots, 
+                       fill_heff=krhf.purify_krlyov_heff(precision, 0, log), verbose=log)
     #TODO: not exactly compatible with PySCF TDA xy format,
     #since the latter has kshifts
     #so PySCF basically has an extra xy index for kshift that I don't have
-    xy =   [(xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
-    # xy =   [xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5) for xi in xy]
+    xy =   [(xi[:nocc*nvir*nkpts].conj().reshape(nkpts, nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
+    #xy =   [xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5) for xi in xy]
         
     if bse.verbose >= logger.INFO:
         np.set_printoptions(threshold=nocc*nvir)
@@ -155,6 +158,7 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     #for A
     Hr1 = einsum('ka,kia->kia', gw_e_vir, r1) - einsum('ki,kia->kia', gw_e_occ, r1)
     
+    '''
     for kL in range(nkpts):
         for k in range(nklist):
             kn = kptlist[k]
@@ -170,6 +174,20 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
         #should be already shifted back to 0 if shifted kmesh
         for k in range(nklist):
             kn = kptlist[k]
+            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn].conj(), Lov[0], r1)'''
+    for k in range(nklist):
+        kn = kptlist[k]
+        for kL in range(nkpts):
+            # Find km that conserves with kn and kL (-km+kn+kL=G)
+            km = all_kidx_r[kL][kn]
+            if bse.CIS:
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
+            else:
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
+                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
+        if bse.singlet: 
+            #kL is (0,0,0) 
+            #should be already shifted back to 0 if shifted kmesh
             Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn].conj(), Lov[0], r1)
     if bse.TDA:
         return Hr1.ravel()
@@ -280,7 +298,6 @@ def _get_e_ia(mo_energy, mo_occ):
         e_ia.append( -moeocc[:,None] + moevir )
     return e_ia
 
-from pyscf.pbc.tdscf import krhf
 class BSE(krhf.TDA):
     '''static screening BSE
 
@@ -447,6 +464,10 @@ class BSE(krhf.TDA):
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
         diag = diag.ravel()
+        
+        e_ia = _get_e_ia(self.gw_e, self._scf.mo_occ)
+        diag = np.hstack([x.ravel() for x in e_ia]).ravel()
+
         if self.TDA:
             return diag
         else: 
