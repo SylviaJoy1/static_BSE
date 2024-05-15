@@ -122,7 +122,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     #TODO: not exactly compatible with PySCF TDA xy format,
     #since the latter has kshifts
     #so PySCF basically has an extra xy index for kshift that I don't have
-    xy =   [(xi[:nocc*nvir*nkpts].conj().reshape(nkpts, nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
+    xy =   [(xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5), 0) for xi in xy]
     #xy =   [xi[:nocc*nvir*nkpts].reshape(nkpts, nocc, nvir)*np.sqrt(.5) for xi in xy]
         
     if bse.verbose >= logger.INFO:
@@ -135,7 +135,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     #since the latter has kshifts
     return conv, nstates, e, xy
     
-def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
+def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs):
     '''matrix-vector multiplication'''
    
     nocc = sum([x < bse.mf_nocc for x in orbs])
@@ -158,40 +158,22 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx_r, orbs):
     #for A
     Hr1 = einsum('ka,kia->kia', gw_e_vir, r1) - einsum('ki,kia->kia', gw_e_occ, r1)
     
-    '''
-    for kL in range(nkpts):
-        for k in range(nklist):
-            kn = kptlist[k]
-            # Find km that conserves with kn and kL (-km+kn+kL=G)
-            km = all_kidx_r[kL][kn]
-            if bse.CIS:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
-            else:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
-                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
-    if bse.singlet:
-        #kL is (0,0,0) 
-        #should be already shifted back to 0 if shifted kmesh
-        for k in range(nklist):
-            kn = kptlist[k]
-            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn].conj(), Lov[0], r1)'''
     for k in range(nklist):
         kn = kptlist[k]
         for kL in range(nkpts):
-            # Find km that conserves with kn and kL (-km+kn+kL=G)
-            km = all_kidx_r[kL][kn]
+            # Find km that conserves with kn and kL
+            km = all_kidx[kL][kn]
             if bse.CIS:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:], Lvv[kL,kn,:].conj(), r1[km,:])
             else:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
-                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:],\
+                                            qeps_body_inv[kL], Lvv[kL,kn,:].conj(), r1[km,:])
         if bse.singlet: 
             #kL is (0,0,0) 
             #should be already shifted back to 0 if shifted kmesh
-            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn].conj(), Lov[0], r1)
+            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn], Lov[0].conj(), r1)
     if bse.TDA:
         return Hr1.ravel()
-    
     else:
         raise NotImplementedError
 #        r2 = r[nocc*nvir:].copy().reshape(nocc,nvir)
@@ -237,7 +219,7 @@ def make_imds(gw, orbs):
     
     qkLij = []
     qeps_body_inv = []
-    all_kidx_r = []
+    all_kidx = []
     for kL in range(nkpts):
         ints_batch_t0 = time.process_time()
         # Lij: (ki, L, i, j) for looping every kL
@@ -271,7 +253,7 @@ def make_imds(gw, orbs):
         Lij = np.asarray(Lij)
         naux = Lij.shape[1]
         qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
-        all_kidx_r.append(kidx_r)
+        all_kidx.append(kidx)
         print('integral batch', time.process_time()-ints_batch_t0)
 
         # body dielectric matrix eps_body
@@ -285,7 +267,7 @@ def make_imds(gw, orbs):
         print('eps_body_inv', time.process_time()-t0)
         qeps_body_inv.append(eps_body_inv)
         
-    return np.array(qkLij), qeps_body_inv, all_kidx_r
+    return np.array(qkLij), qeps_body_inv, all_kidx
     
 def _get_e_ia(mo_energy, mo_occ):
     e_ia = []
@@ -433,11 +415,11 @@ class BSE(krhf.TDA):
     def gen_matvec(self, orbs):
     
         imds_t0 = time.process_time()
-        qkLij, qeps_body_inv, all_kidx_r = make_imds(self.gw, orbs)
+        qkLij, qeps_body_inv, all_kidx = make_imds(self.gw, orbs)
         print('imds total time', time.process_time()-imds_t0)
         
         diag = self.get_diag(qkLij[0,:], qeps_body_inv[0], orbs)
-        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx_r, orbs) for x in xs]
+        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx, orbs) for x in xs]
         return matvec, diag
 
     def get_diag(self, kLij, eps_body_inv, orbs):
@@ -446,7 +428,7 @@ class BSE(krhf.TDA):
         nvir = nmo - nocc
         nkpts = self.nkpts
         
-        Loo = kLij[:,:, :nocc, :nocc]
+        '''Loo = kLij[:,:, :nocc, :nocc]
         Lov = kLij[:,:, :nocc, nocc:]
         Lvv = kLij[:,:, nocc:, nocc:]
         
@@ -463,9 +445,10 @@ class BSE(krhf.TDA):
                     diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
-        diag = diag.ravel()
+        diag = diag.ravel()'''
         
-        e_ia = _get_e_ia(self.gw_e, self._scf.mo_occ)
+        mo_occ = [self._scf.mo_occ[k][self.mf_nocc-nocc:self.mf_nocc+nvir] for k in range(nkpts)]
+        e_ia = _get_e_ia(self.gw_e[:,self.mf_nocc-nocc:self.mf_nocc+nvir], mo_occ)
         diag = np.hstack([x.ravel() for x in e_ia]).ravel()
 
         if self.TDA:
@@ -487,8 +470,11 @@ class BSE(krhf.TDA):
     #    return guess, nroots
     
     def get_init_guess(self, nstates, orbs, diag=None):
-        mo_energy = self._scf.mo_energy
-        mo_occ = self._scf.mo_occ
+        nocc = sum([x < self.mf_nocc for x in orbs])
+        nmo = len(orbs)
+        nvir = nmo - nocc
+        mo_occ = [self._scf.mo_occ[k][self.mf_nocc-nocc:self.mf_nocc+nvir] for k in range(self.nkpts)]
+        mo_energy = self.gw_e[:,self.mf_nocc-nocc:self.mf_nocc+nvir]
         e_ia = np.concatenate( [x.reshape(-1) for x in
                                    _get_e_ia(mo_energy, mo_occ)] )
         nov = e_ia.size
