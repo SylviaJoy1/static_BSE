@@ -41,7 +41,7 @@ from pyscf.pbc.lib.kpts_helper import gamma_point
 from pyscf.pbc.tdscf import krhf
 einsum = lib.einsum
     
-REAL_EIG_THRESHOLD = getattr(__config__, 'pbc_tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
+REAL_EIG_THRESHOLD = getattr(__config__, 'pbc_tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)#-3 in tdscf
 # Low excitation filter to avoid numerical instability
 POSITIVE_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_positive_eig_threshold', 1e-3)
 deg_eia_thresh = getattr(__config__, 'tdscf_rhf_TDDFT_deg_eia_thresh', 1e-3)
@@ -59,18 +59,10 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
 
     #When we freeze GW orbitals,
     #we still output zeros for the frozen orbs AND 
-    #any non-orbs orbitals, I believe.
+    #any non-orbs orbitals
     if orbs is None:
         orbs = [x for x in range(bse.mf_nmo)]
     
-    #this only covers the frozen orb case
-    # orbs_nocc = sum([x < bse.mf_nocc for x in orbs])
-    # if orbs_nocc > bse.gw_nocc: #if any frozen gw orbs
-    #     orbs = [bse.mf_nocc - x for x in range(bse.gw_nocc, 0, -1)] + list(orbs)[orbs_nocc:]
-    # orbs_vir = sum([x > bse.mf_nocc for x in orbs])
-    # if orbs_vir > bse.gw_nmo - bse.gw_nocc:
-    #     orbs = list(orbs)[:bse.gw_nocc] + [x for x in range(bse.gw_nocc, bse.gw_nmo)]
-
     if len(orbs) > sum([x != 0 for x in bse.gw_e[0]]):
         logger.warn(bse, 'BSE orbs must be a subset of GW orbs!')
         raise RuntimeError
@@ -134,12 +126,13 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     #TODO: bse.e is also not compatible with PySCF TDA e format,
     #since the latter has kshifts
     return conv, nstates, e, xy
-    
+
 def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs):
     '''matrix-vector multiplication'''
    
     nocc = sum([x < bse.mf_nocc for x in orbs])
     nmo = len(orbs)
+    kpts = bse.kpts
     nkpts = bse.nkpts
     nvir = nmo - nocc
     
@@ -440,11 +433,11 @@ class BSE(krhf.TDA):
             for a in range(nvir):
                 diag[:,i,a] += gw_e_vir[:,a] - gw_e_occ[:,i]
                 if self.CIS:
-                    diag[:,i,a] -= (1/nkpts)*einsum('kP, kP->k', Loo[:,:,i,i].conj(), Lvv[:,:,a,a])
+                    diag[:,i,a] -= (1/nkpts)*einsum('kP, kP->k', Loo[:,:,i,i], Lvv[:,:,a,a].conj())
                 else:
-                    diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i].conj(), eps_body_inv, Lvv[:,:,a,a])
+                    diag[:,i,a] -= (1/nkpts)*einsum('kP, PQ, kQ->k', Loo[:,:,i,i], eps_body_inv, Lvv[:,:,a,a].conj())
                 if self.singlet:
-                    diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a].conj(), Lov[:,:,i,a])
+                    diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a], Lov[:,:,i,a].conj())
         diag = diag.ravel()'''
         
         mo_occ = [self._scf.mo_occ[k][self.mf_nocc-nocc:self.mf_nocc+nvir] for k in range(nkpts)]
