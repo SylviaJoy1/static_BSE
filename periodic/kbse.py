@@ -157,14 +157,14 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs):
             # Find km that conserves with kn and kL
             km = all_kidx[kL][kn]
             if bse.CIS:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:], Lvv[kL,kn,:].conj(), r1[km,:])
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
             else:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:],\
-                                            qeps_body_inv[kL], Lvv[kL,kn,:].conj(), r1[km,:])
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
+                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
         if bse.singlet: 
             #kL is (0,0,0) 
             #should be already shifted back to 0 if shifted kmesh
-            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn], Lov[0].conj(), r1)
+            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn].conj(), Lov[0], r1)
     if bse.TDA:
         return Hr1.ravel()
     else:
@@ -421,7 +421,8 @@ class BSE(krhf.TDA):
         nvir = nmo - nocc
         nkpts = self.nkpts
         
-        '''Loo = kLij[:,:, :nocc, :nocc]
+        '''
+        Loo = kLij[:,:, :nocc, :nocc]
         Lov = kLij[:,:, :nocc, nocc:]
         Lvv = kLij[:,:, nocc:, nocc:]
         
@@ -439,7 +440,8 @@ class BSE(krhf.TDA):
                 if self.singlet:
                     diag[:,i,a] += (2/nkpts)*einsum('kP,kP->k', Lov[:,:,i,a], Lov[:,:,i,a].conj())
         diag = diag.ravel()'''
-        
+        #no need to use the more expensive diag
+
         mo_occ = [self._scf.mo_occ[k][self.mf_nocc-nocc:self.mf_nocc+nvir] for k in range(nkpts)]
         e_ia = _get_e_ia(self.gw_e[:,self.mf_nocc-nocc:self.mf_nocc+nvir], mo_occ)
         diag = np.hstack([x.ravel() for x in e_ia]).ravel()
