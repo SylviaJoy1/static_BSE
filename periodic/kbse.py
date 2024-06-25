@@ -234,7 +234,7 @@ def make_imds(gw, orbs):
                     # Read (L|pq) and ao2mo transform to (L|ij)
                     Lpq = []
                     for LpqR, LpqI, sign \
-                            in mydf.sr_loop([kpti, kptj], max_memory=0.1*gw._scf.max_memory, compact=False):
+                            in mydf.sr_loop([kpti, kptj], max_memory=0.2*gw._scf.max_memory, compact=False):
                         Lpq.append(LpqR+LpqI*1.0j)
                     # support uneqaul naux on different k points
                     Lpq = np.vstack(Lpq).reshape(-1,nao*nao)
@@ -377,8 +377,10 @@ class BSE(krhf.TDA):
         nkpts = self.nkpts
         if orbs is None:
             orbs = [x for x in range(self.mf_nmo)]
-        mem_incore = max(2*nkpts*nmo**2*naux, 2*nkpts**2*len(orbs)**2*naux) * 16/1e6
+        mem_incore = 2*nkpts*nmo**2*naux * 16/1e6 + 2*nkpts**2*len(orbs)**2*naux * 16/1e6
+        print('mem_incore', mem_incore)
         mem_now = lib.current_memory()[0]
+        print('mem_now', mem_now)
         if (mem_incore + mem_now > 0.99*self.max_memory):
             logger.warn(self, 'Memory may not be enough!')
             raise NotImplementedError        
