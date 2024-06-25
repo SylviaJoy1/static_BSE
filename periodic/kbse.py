@@ -18,17 +18,8 @@
 #
 
 '''
-static screening BSE with iterative diagonalization, 
-with or without TDA, singlet or triplet excitations. 
-Density-fitted. Turbomole-style.
-Periodic.
-Frozen orbitals.
-Requires Nk^2 * Naux * [norb]^2 memory (sim. to hybrid f'nl)
-NOTE: Nk^2 * Naux * Nmo^2 memory is often too high,
-so my previous solution was to re-access the integrals each matvec so
-the memory is only Nk * Naux * Nmo^2. But that is too slow.
-Now my solution is to only keep the necessary Nk^2 * Naux * [norb]^2 integrals in memory,
-and hope that norb << nmo.
+static screening TDA-BSE with kpt sampling
+Density fitting, frozen orbitals.
 '''
 import time
 import numpy as np
