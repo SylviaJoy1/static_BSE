@@ -243,7 +243,7 @@ def make_imds(gw, orbs):
         # body dielectric matrix eps_body
         #static screening for BSE
         t0 = time.process_time()
-        Pi = get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx)
+        Pi = np.real(get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx))
         print('get_rho_response', time.process_time()-t0)
 
         t0 = time.process_time() 
