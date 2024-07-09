@@ -118,7 +118,7 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     #since the latter has kshifts
     return conv, nstates, e, xy
 
-def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs, head):
+def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs):
     '''matrix-vector multiplication'''
    
     nocc = sum([x < bse.mf_nocc for x in orbs])
@@ -152,7 +152,6 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs, head):
             else:
                 Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
                                             qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
-                Hr1 -=  head * r1
         if bse.singlet: 
             #kL is (0,0,0) 
             #should be already shifted back to 0 if shifted kmesh
@@ -181,11 +180,11 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs, head):
 #
 #        return np.hstack((Hr1.ravel(), -Hr2.ravel()))
 
-from pyscf.pbc.gw.krgw_ac import get_rho_response,\
-get_rho_response_head, get_rho_response_wing, get_qij
+
+from pyscf.pbc.gw.krgw_ac import get_rho_response
 from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo.incore import _conc_mos
-def make_imds(gw, orbs, fc):
+def make_imds(gw, orbs):
     mf_nocc = gw._scf.mol.nelectron//2
     nocc = sum([x < mf_nocc for x in orbs])
     nmo = len(orbs)
@@ -240,42 +239,19 @@ def make_imds(gw, orbs, fc):
         qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
         all_kidx.append(kidx)
         print('integral batch', time.process_time()-ints_batch_t0)
-       
+
         # body dielectric matrix eps_body
         #static screening for BSE
         t0 = time.process_time()
         Pi = np.real(get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx))
         print('get_rho_response', time.process_time()-t0)
 
-        t0 = time.process_time()
+        t0 = time.process_time() 
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
         print('eps_body_inv', time.process_time()-t0)
         qeps_body_inv.append(eps_body_inv)
         
-        head = 0
-        '''if fc and (kL == 0):
-            # Set up q mesh for q->0 finite size correction
-            q_pts = np.array([1e-3,0,0]).reshape(1,3)
-            q_abs = gw.mol.get_abs_kpts(q_pts)
-            # Get qij = 1/sqrt(Omega) * < psi_{ik} | e^{iqr} | psi_{ak-q} > at q: (nkpts, nocc, nvir)
-            qij = get_qij(gw, q_abs[0], mo_coeff)
-
-            #head dielectric matrix eps_00
-            Pi_00 = get_rho_response_head(gw, 0.0, mo_energy, qij)
-            eps_00 = 1. - 4. * np.pi/np.linalg.norm(q_abs[0])**2 * Pi_00
-            
-            Pi_P0 = get_rho_response_wing(gw, 0.0, mo_energy, Lij, qij)
-            eps_P0 = -np.sqrt(4.*np.pi) / np.linalg.norm(q_abs[0]) * Pi_P0
-            eps_inv_00 = 1./(eps_00 - np.dot(np.dot(eps_P0.conj(),eps_body_inv),eps_P0))
-            #eps_inv_P0 = -eps_inv_00 * np.dot(eps_body_inv, eps_P0)
-
-            W_00 = 2./np.pi * (6.*np.pi**2/gw.mol.vol/nkpts)**(1./3.) * (eps_inv_00 - 1.) #eq. 43
-
-            #Loo = Lij[:,:, mf_nocc-nocc:mf_nocc, mf_nocc-nocc:mf_nocc]
-            #Lvv = Lij[:,:, mf_nocc:mf_nocc+nvir, mf_nocc:mf_nocc+nvir]
-            #head = np.einsum('kPii, kPaa->kia', Loo.conj(), Lvv) * eps_inv_00'''
-         
-    return np.array(qkLij), qeps_body_inv, all_kidx, head
+    return np.array(qkLij), qeps_body_inv, all_kidx
     
 def _get_e_ia(mo_energy, mo_occ):
     e_ia = []
@@ -304,9 +280,8 @@ class BSE(krhf.TDA):
         vs : list
             BSE eigenvectors 
     '''
-    fc = getattr(__config__, 'bse_bse_BSE_fc', False)
     _keys = {
-        'frozen', 'mol', 'with_df', 'fc',
+        'frozen', 'mol', 'with_df',
         'kpts', 'nkpts', 'mo_energy', 'mo_coeff', 'mo_occ',
     }
     
@@ -314,8 +289,6 @@ class BSE(krhf.TDA):
         assert(isinstance(gw._scf, pbcdft.krks.KRKS) or isinstance(gw._scf, pbcscf.krhf.KRHF) or isinstance(gw._scf, pbcdft.krks_symm.SymAdaptedKRKS))
         if CIS:
             assert isinstance(gw._scf, pbcscf.krhf.KRHF)
-        if self.fc:
-            assert(gw.fc)
         if mo_coeff  is None: mo_coeff  = gw._scf.mo_coeff
         if mo_occ    is None: mo_occ    = gw._scf.mo_occ
         
@@ -387,7 +360,6 @@ class BSE(krhf.TDA):
         logger.info(self, 'singlet = %s', self.singlet)
         if not self._scf.converged:
             log.warn('Ground state SCF is not converged')
-        logger.info(self, 'BSE finite size corrections (just head for now) = %s', self.fc)
         return self
     
     def kernel(self, nstates=None, orbs=None):
@@ -429,11 +401,11 @@ class BSE(krhf.TDA):
     def gen_matvec(self, orbs):
     
         imds_t0 = time.process_time()
-        qkLij, qeps_body_inv, all_kidx, head = make_imds(self.gw, orbs, self.fc)
+        qkLij, qeps_body_inv, all_kidx = make_imds(self.gw, orbs)
         print('imds total time', time.process_time()-imds_t0)
         
         diag = self.get_diag(qkLij[0,:], qeps_body_inv[0], orbs)
-        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx, orbs, head=head) for x in xs]
+        matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx, orbs) for x in xs]
         return matvec, diag
 
     def get_diag(self, kLij, eps_body_inv, orbs):
