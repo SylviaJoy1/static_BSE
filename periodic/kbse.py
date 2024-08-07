@@ -69,6 +69,17 @@ def kernel(bse, nstates=None, orbs=None, verbose=logger.NOTE):
     
     matvec, diag = bse.gen_matvec(orbs)
     
+    #import scipy
+    #id_mat = np.eye(nkpts*nocc*nvir, dtype='complex128')
+    #bse_mat = []
+    #for n in range(nkpts*nocc*nvir):
+    #    id_vec = id_mat[:,n]
+    #    bse_mat.append(matvec(np.array([id_vec])))
+    #bse_mat = np.array(bse_mat).reshape((nkpts*nocc*nvir, nkpts*nocc*nvir))
+    #print(max(abs((bse_mat - bse_mat.conj().T).ravel())))
+    #print(scipy.linalg.ishermitian(bse_mat, atol=1e-12))
+    #print('excitations', np.linalg.eigh(bse_mat))
+
     size = nocc*nvir
     if not bse.TDA:
         size *= 2
@@ -196,13 +207,14 @@ def make_imds(gw, orbs):
     nkpts = gw.nkpts
     kpts = gw.kpts
     mydf = gw.with_df
+    naux = mydf.get_naoaux()
 
     # possible kpts shift center
     kscaled = gw.mol.get_scaled_kpts(kpts)
     kscaled -= kscaled[0]
     
-    qkLij = []
-    qeps_body_inv = []
+    qkLij = np.zeros((nkpts, nkpts, naux, nmo, nmo))#[]
+    qeps_body_inv = np.zeros((nkpts, naux, naux)))#[]
     all_kidx = []
     for kL in range(nkpts):
         ints_batch_t0 = time.process_time()
@@ -225,7 +237,7 @@ def make_imds(gw, orbs):
                     # Read (L|pq) and ao2mo transform to (L|ij)
                     Lpq = []
                     for LpqR, LpqI, sign \
-                            in mydf.sr_loop([kpti, kptj], max_memory=0.2*gw._scf.max_memory, compact=False):
+                            in mydf.sr_loop([kpti, kptj], max_memory=0.1*gw._scf.max_memory, compact=False):
                         Lpq.append(LpqR+LpqI*1.0j)
                     # support uneqaul naux on different k points
                     Lpq = np.vstack(Lpq).reshape(-1,nao*nao)
@@ -235,24 +247,27 @@ def make_imds(gw, orbs):
                     Lij_out = _ao2mo.r_e2(Lpq, moij, ijslice, tao, ao_loc, out=Lij_out)
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
-        naux = Lij.shape[1]
-        qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
+        #naux = Lij.shape[1]
+        #qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
+        qkLij[kL] = Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]
         all_kidx.append(kidx)
         print('integral batch', time.process_time()-ints_batch_t0)
 
         # body dielectric matrix eps_body
         #static screening for BSE
         t0 = time.process_time()
+        #must discard imaginary part (floating point error, DF error maybe)
         Pi = np.real(get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx))
         print('get_rho_response', time.process_time()-t0)
 
         t0 = time.process_time() 
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
         print('eps_body_inv', time.process_time()-t0)
-        qeps_body_inv.append(eps_body_inv)
-        
-    return np.array(qkLij), qeps_body_inv, all_kidx
-    
+        #qeps_body_inv.append(eps_body_inv)
+        qeps_body_inv[kL] = eps_body_inv
+    #return np.asarray(qkLij), qeps_body_inv, all_kidx
+    return qkLij, qeps_body_inv, all_kidx
+
 def _get_e_ia(mo_energy, mo_occ):
     e_ia = []
     nkpts = len(mo_occ)
@@ -474,7 +489,7 @@ class BSE(krhf.TDA):
         x0 = np.zeros((idx.size, nov))
         for i, j in enumerate(idx):
             x0[i, j] = 1  # Koopmans' excitations
-        return np.array(x0, dtype='complex128'), nstates
+        return np.asarray(x0, dtype='complex128'), nstates
 
     # @property
     # def nocc(self):
