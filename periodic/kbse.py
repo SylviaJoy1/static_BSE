@@ -214,7 +214,7 @@ def make_imds(gw, orbs):
     kscaled -= kscaled[0]
     
     qkLij = np.zeros((nkpts, nkpts, naux, nmo, nmo))#[]
-    qeps_body_inv = np.zeros((nkpts, naux, naux)))#[]
+    qeps_body_inv = np.zeros((nkpts, naux, naux))#[]
     all_kidx = []
     for kL in range(nkpts):
         ints_batch_t0 = time.process_time()
