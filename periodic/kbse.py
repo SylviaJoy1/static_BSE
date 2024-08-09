@@ -249,7 +249,7 @@ def make_imds(gw, orbs):
                     Lij_out = _ao2mo.r_e2(Lpq, moij, ijslice, tao, ao_loc, out=Lij_out)
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
-        #naux = Lij.shape[1]
+        naux = Lij.shape[1]
         qkLij.append(np.copy(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]))
         #qkLij[kL] = Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]
         all_kidx.append(kidx)
