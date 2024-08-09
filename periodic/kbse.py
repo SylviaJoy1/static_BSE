@@ -207,14 +207,16 @@ def make_imds(gw, orbs):
     nkpts = gw.nkpts
     kpts = gw.kpts
     mydf = gw.with_df
-    naux = mydf.get_naoaux()
+    naux = mydf.get_naoaux() 
+    #the problem with filling an array is that there may be
+    #different naux for each kpt -> ragged array
 
     # possible kpts shift center
     kscaled = gw.mol.get_scaled_kpts(kpts)
     kscaled -= kscaled[0]
     
-    qkLij = np.zeros((nkpts, nkpts, naux, nmo, nmo))#[]
-    qeps_body_inv = np.zeros((nkpts, naux, naux))#[]
+    qkLij = []#np.zeros((nkpts, nkpts, naux, nmo, nmo))#[]
+    qeps_body_inv = []#np.zeros((nkpts, naux, naux))#[]
     all_kidx = []
     for kL in range(nkpts):
         ints_batch_t0 = time.process_time()
@@ -248,8 +250,8 @@ def make_imds(gw, orbs):
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
         #naux = Lij.shape[1]
-        #qkLij.append(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir])
-        qkLij[kL] = Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]
+        qkLij.append(np.copy(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]))
+        #qkLij[kL] = Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]
         all_kidx.append(kidx)
         print('integral batch', time.process_time()-ints_batch_t0)
 
@@ -263,10 +265,10 @@ def make_imds(gw, orbs):
         t0 = time.process_time() 
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
         print('eps_body_inv', time.process_time()-t0)
-        #qeps_body_inv.append(eps_body_inv)
-        qeps_body_inv[kL] = eps_body_inv
-    #return np.asarray(qkLij), qeps_body_inv, all_kidx
-    return qkLij, qeps_body_inv, all_kidx
+        qeps_body_inv.append(np.copy(eps_body_inv))
+        #qeps_body_inv[kL] = eps_body_inv
+    return np.asarray(qkLij), qeps_body_inv, all_kidx
+    #return qkLij, qeps_body_inv, all_kidx
 
 def _get_e_ia(mo_energy, mo_occ):
     e_ia = []
