@@ -144,9 +144,9 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs):
     gw_e_occ = bse.gw_e[:,bse.mf_nocc-nocc:bse.mf_nocc]
     gw_e_vir = bse.gw_e[:,bse.mf_nocc:bse.mf_nocc+nvir]
     
-    Loo = qkLij[:,:,:, :nocc, :nocc]
-    Lov = qkLij[:,:,:, :nocc, nocc:]
-    Lvv = qkLij[:,:,:, nocc:, nocc:]
+    #Loo = qkLij[:][:,:,:nocc,:nocc]
+    #Lov = qkLij[:][:,:,:nocc,nocc:]
+    #Lvv = qkLij[:][:,:,nocc:,nocc:]
     
     r1 = r[:nkpts*nocc*nvir].copy().reshape(nkpts, nocc, nvir)
     
@@ -159,14 +159,14 @@ def matvec(bse, r, qkLij, qeps_body_inv, all_kidx, orbs):
             # Find km that conserves with kn and kL
             km = all_kidx[kL][kn]
             if bse.CIS:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', Loo[kL,kn,:].conj(), Lvv[kL,kn,:], r1[km,:])
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, Pab, jb->ia', qkLij[kL][kn, :, :nocc, :nocc].conj(), qkLij[kL][kn, :, nocc:, nocc:], r1[km])
             else:
-                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', Loo[kL,kn,:].conj(),\
-                                            qeps_body_inv[kL], Lvv[kL,kn,:], r1[km,:])
+                Hr1[kn,:] -= (1/nkpts) * einsum('Pij, PQ, Qab, jb->ia', qkLij[kL][kn, :, :nocc, :nocc].conj(),\
+                        qeps_body_inv[kL], qkLij[kL][kn, :, nocc:, nocc:], r1[km])
         if bse.singlet: 
             #kL is (0,0,0) 
             #should be already shifted back to 0 if shifted kmesh
-            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', Lov[0,kn].conj(), Lov[0], r1)
+            Hr1[kn,:] += (2/nkpts) * einsum('Qia, qQjb,qjb->ia', qkLij[0][kn, :, :nocc, nocc:].conj(), qkLij[0][:, :, :nocc, nocc:], r1)
     if bse.TDA:
         return Hr1.ravel()
     else:
@@ -207,7 +207,7 @@ def make_imds(gw, orbs):
     nkpts = gw.nkpts
     kpts = gw.kpts
     mydf = gw.with_df
-    naux = mydf.get_naoaux() 
+    #naux = mydf.get_naoaux() 
     #the problem with filling an array is that there may be
     #different naux for each kpt -> ragged array
 
@@ -250,24 +250,24 @@ def make_imds(gw, orbs):
                     Lij.append(Lij_out.reshape(-1,nao,nao))
         Lij = np.asarray(Lij)
         naux = Lij.shape[1]
-        qkLij.append(np.copy(Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]))
+        qkLij.append(np.copy(Lij[:,:,mf_nocc-nocc:mf_nocc+nvir,mf_nocc-nocc:mf_nocc+nvir]))#view then copy, not copy then view
         #qkLij[kL] = Lij[:,:, mf_nocc-nocc:mf_nocc+nvir, mf_nocc-nocc:mf_nocc+nvir]
         all_kidx.append(kidx)
-        print('integral batch', time.process_time()-ints_batch_t0)
+        #print('integral batch', time.process_time()-ints_batch_t0)
 
         # body dielectric matrix eps_body
         #static screening for BSE
-        t0 = time.process_time()
+        #t0 = time.process_time()
         #must discard imaginary part (floating point error, DF error maybe)
         Pi = np.real(get_rho_response(gw, 0.0, mo_energy, Lij, kL, kidx))
-        print('get_rho_response', time.process_time()-t0)
+        #print('get_rho_response', time.process_time()-t0)
 
-        t0 = time.process_time() 
+        #t0 = time.process_time() 
         eps_body_inv = np.linalg.inv(np.eye(naux)-Pi)
-        print('eps_body_inv', time.process_time()-t0)
+        #print('eps_body_inv', time.process_time()-t0)
         qeps_body_inv.append(np.copy(eps_body_inv))
         #qeps_body_inv[kL] = eps_body_inv
-    return np.asarray(qkLij), qeps_body_inv, all_kidx
+    return qkLij, qeps_body_inv, all_kidx
     #return qkLij, qeps_body_inv, all_kidx
 
 def _get_e_ia(mo_energy, mo_occ):
@@ -421,7 +421,7 @@ class BSE(krhf.TDA):
         qkLij, qeps_body_inv, all_kidx = make_imds(self.gw, orbs)
         print('imds total time', time.process_time()-imds_t0)
         
-        diag = self.get_diag(qkLij[0,:], qeps_body_inv[0], orbs)
+        diag = self.get_diag(qkLij[0], qeps_body_inv[0], orbs)
         matvec = lambda xs: [self.matvec(x, qkLij, qeps_body_inv, all_kidx, orbs) for x in xs]
         return matvec, diag
 
